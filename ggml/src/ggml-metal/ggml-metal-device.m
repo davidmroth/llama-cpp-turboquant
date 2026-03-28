@@ -276,6 +276,29 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
                     }
                 }
 
+                // Half-precision register LUT: cn[8] in half (16 bytes) instead of constant memory.
+                // May not spill on Apple8 where float cn[8] (32 bytes) did spill.
+                // Opt-in via TURBO_HALF_REG_LUT=1 env var.
+                {
+                    const char * hrl = getenv("TURBO_HALF_REG_LUT");
+                    if (hrl && hrl[0] == '1') {
+                        [prep setObject:@"1" forKey:@"TURBO_USE_HALF_REG_LUT"];
+                        GGML_LOG_INFO("%s: turbo3 half register LUT enabled\n", __func__);
+                    }
+                }
+
+                // Threadgroup centroid cache: load cn[8] into SMEM once per threadgroup.
+                // Different from SMEM pre-dequant (which cached dequanted VALUES, 8KB).
+                // This caches just the CENTROID TABLE (16 bytes).
+                // Opt-in via TURBO_TG_CENTROID=1 env var.
+                {
+                    const char * tgc = getenv("TURBO_TG_CENTROID");
+                    if (tgc && tgc[0] == '1') {
+                        [prep setObject:@"1" forKey:@"TURBO_USE_TG_CENTROID"];
+                        GGML_LOG_INFO("%s: turbo3 threadgroup centroid cache enabled\n", __func__);
+                    }
+                }
+
                 // TurboQuant profiling: set TURBO_PROFILE_MODE env var (0-4)
                 {
                     const char * pm = getenv("TURBO_PROFILE_MODE");

@@ -685,6 +685,14 @@ void dequantize_turbo3_0_t4(device const block_turbo3_0 * xb, short il, thread t
 #define TURBO_USE_QC_PRECOMPUTE 0
 #endif
 
+#ifndef TURBO_USE_HALF_REG_LUT
+#define TURBO_USE_HALF_REG_LUT 0
+#endif
+
+#ifndef TURBO_USE_TG_CENTROID
+#define TURBO_USE_TG_CENTROID 0
+#endif
+
 #if TURBO_PROFILE_MODE == 1
     // NO-OP: decode speed ceiling
     reg = type4(0.0f);
@@ -7223,6 +7231,29 @@ kernel void kernel_flash_attn_ext_vec(
                 pk4 += ty*NS10/4 + tx;
                 pq4 += tx;
 
+#if TURBO_USE_HALF_REG_LUT
+                // HALF REGISTER LUT: 8 centroids in half precision (16 bytes).
+                // If Metal keeps these in registers (no spill), this eliminates constant memory.
+                // float cn[8] (32 bytes) was tested before and spilled; half cn[8] is half the size.
+                half cn_h[8] = {
+                    -0.190685h, -0.117832h, -0.065717h, -0.021460h,
+                     0.021460h,  0.065717h,  0.117832h,  0.190685h
+                };
+#endif
+
+#if TURBO_USE_TG_CENTROID
+                // THREADGROUP CENTROID CACHE: load 8 centroids into threadgroup memory once.
+                // All threads then read from SMEM instead of constant memory.
+                // Only 16 bytes — fits in a single cache line. No per-element stores.
+                // The centroids are constant values, so we only need to load them once
+                // per Q*K^T block (they don't change between cache positions).
+                threadgroup half * tg_cn = (threadgroup half *) (shmem_f16 + NSG*PK + NSG*SH + 2*NSG*PV);
+                if (tiisg < 8) {
+                    tg_cn[tiisg] = turbo_centroids_3bit_h[tiisg];
+                }
+                simdgroup_barrier(mem_flags::mem_threadgroup);
+#endif
+
 #if TURBO_USE_QC_PRECOMPUTE && TURBO_USE_4MAG
                 // Q·CENTROID PRECOMPUTE: precompute mag[c] * Q[j] for c=0..3, j=0..3.
                 // This table is computed ONCE per outer iteration, reused for all C cache positions.
@@ -7254,6 +7285,95 @@ kernel void kernel_flash_attn_ext_vec(
                         FOR_UNROLL (short ii = 0; ii < DK4/NL; ++ii) {
                             const short i = ii*NL + tx;
                             mqk[cc] += dot((float4) smem_dq[(NE*cc + ty) * DK4 + i], (float4) sq4[i]);
+                        }
+#elif TURBO_USE_HALF_REG_LUT
+                        // HALF REGISTER LUT: load 8 centroids into half[8] registers.
+                        // half is 2 bytes vs float's 4 — 16 bytes total may fit in registers
+                        // where 32-byte float[8] spills to stack on Apple8.
+                        // If it fits: zero constant memory reads, pure register + ALU.
+                        {
+                        device const kd4_t * pk = (device const kd4_t *) (k + ((ic + NE*cc + ty)*args.nb11));
+
+                        FOR_UNROLL (short ii = 0; ii < DK4/NL; ++ii) {
+                            const short i = ii*NL + tx;
+                            const short blk_idx = i / nl_k;
+                            const short il = i % nl_k;
+
+                            device const block_turbo3_0 * xb = ((device const block_turbo3_0 *)pk) + blk_idx;
+                            const float norm = float(xb->norm);
+                            const uint8_t qb = xb->qs[il];
+                            const uint8_t sb = xb->signs[il >> 1];
+                            const int sshift = (il & 1) << 2;
+
+                            const uint8_t q0 = (qb      ) & 0x03;
+                            const uint8_t q1 = (qb >> 2) & 0x03;
+                            const uint8_t q2 = (qb >> 4) & 0x03;
+                            const uint8_t q3 = (qb >> 6);
+                            const uint8_t s0 = (sb >> (sshift    )) & 1;
+                            const uint8_t s1 = (sb >> (sshift + 1)) & 1;
+                            const uint8_t s2 = (sb >> (sshift + 2)) & 1;
+                            const uint8_t s3 = (sb >> (sshift + 3)) & 1;
+
+                            // 3-bit index: 2-bit qs | 1-bit sign
+                            const uint8_t idx0 = q0 | (s0 << 2);
+                            const uint8_t idx1 = q1 | (s1 << 2);
+                            const uint8_t idx2 = q2 | (s2 << 2);
+                            const uint8_t idx3 = q3 | (s3 << 2);
+
+                            // Read from half register LUT (16 bytes, may fit in registers)
+                            const float4 kv = float4(
+                                float(cn_h[idx0]),
+                                float(cn_h[idx1]),
+                                float(cn_h[idx2]),
+                                float(cn_h[idx3])
+                            ) * norm;
+
+                            mqk[cc] += dot(kv, (float4) sq4[i]);
+                        }
+                        }
+#elif TURBO_USE_TG_CENTROID
+                        // THREADGROUP CENTROID CACHE: read centroids from threadgroup memory.
+                        // 8 half values (16 bytes) loaded once per threadgroup, all threads
+                        // read from SMEM. Different from SMEM pre-dequant which cached
+                        // dequanted VALUES (8KB). This caches just the CENTROID TABLE (16B).
+                        {
+                        device const kd4_t * pk = (device const kd4_t *) (k + ((ic + NE*cc + ty)*args.nb11));
+
+                        FOR_UNROLL (short ii = 0; ii < DK4/NL; ++ii) {
+                            const short i = ii*NL + tx;
+                            const short blk_idx = i / nl_k;
+                            const short il = i % nl_k;
+
+                            device const block_turbo3_0 * xb = ((device const block_turbo3_0 *)pk) + blk_idx;
+                            const float norm = float(xb->norm);
+                            const uint8_t qb = xb->qs[il];
+                            const uint8_t sb = xb->signs[il >> 1];
+                            const int sshift = (il & 1) << 2;
+
+                            const uint8_t q0 = (qb      ) & 0x03;
+                            const uint8_t q1 = (qb >> 2) & 0x03;
+                            const uint8_t q2 = (qb >> 4) & 0x03;
+                            const uint8_t q3 = (qb >> 6);
+                            const uint8_t s0 = (sb >> (sshift    )) & 1;
+                            const uint8_t s1 = (sb >> (sshift + 1)) & 1;
+                            const uint8_t s2 = (sb >> (sshift + 2)) & 1;
+                            const uint8_t s3 = (sb >> (sshift + 3)) & 1;
+
+                            const uint8_t idx0 = q0 | (s0 << 2);
+                            const uint8_t idx1 = q1 | (s1 << 2);
+                            const uint8_t idx2 = q2 | (s2 << 2);
+                            const uint8_t idx3 = q3 | (s3 << 2);
+
+                            // Read from threadgroup centroid cache (loaded once per threadgroup)
+                            const float4 kv = float4(
+                                float(tg_cn[idx0]),
+                                float(tg_cn[idx1]),
+                                float(tg_cn[idx2]),
+                                float(tg_cn[idx3])
+                            ) * norm;
+
+                            mqk[cc] += dot(kv, (float4) sq4[i]);
+                        }
                         }
 #elif TURBO_USE_QC_PRECOMPUTE && TURBO_USE_4MAG
                         // Q·CENTROID PRECOMPUTE: zero constant reads in inner loop.
