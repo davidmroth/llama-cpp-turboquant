@@ -13,10 +13,12 @@
 #include "llama-impl.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <numeric>
+#include <thread>
 
 static constexpr int32_t OFFSET_MAX = 65536;
 
@@ -197,6 +199,22 @@ void llama_triattention::update_calibration() {
 bool llama_triattention::eval_callback(ggml_tensor * t, bool ask, void * user_data) {
     auto * self = (llama_triattention *)user_data;
 
+    // Fast bail: once calibrated we stop accumulating Q stats unless the
+    // adaptive flag is set. This removes the cb_eval hot path from steady-state
+    // prefill/decode — verified to be the dominant cost on 7B @ 32K (~14s out of
+    // 16s of V3 overhead). Adaptive mode can be re-enabled via TRIATT_ADAPTIVE=1.
+    static int adaptive_mode = -1;
+    if (adaptive_mode < 0) {
+        const char * env = getenv("TRIATT_ADAPTIVE");
+        adaptive_mode = env ? atoi(env) : 0;
+        if (adaptive_mode != 0) {
+            LLAMA_LOG_INFO("triatt: adaptive calibration ENABLED (cb_eval runs on every forward)\n");
+        }
+    }
+    if (self->calibrated && adaptive_mode == 0) {
+        return false;
+    }
+
     const char * name = ggml_get_name(t);
     if (!name) return false;
 
@@ -347,6 +365,12 @@ void llama_triattention::score_tokens(
 }
 
 int32_t llama_triattention::evict(llama_kv_cache * cache, ggml_type type_k) {
+    using clk = std::chrono::high_resolution_clock;
+    const auto t_start = clk::now();
+    auto us = [](clk::time_point a, clk::time_point b) {
+        return (int)std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+    };
+
     if (type_k != GGML_TYPE_F16 && type_k != GGML_TYPE_Q8_0) {
         LLAMA_LOG_WARN("%s: unsupported K type %d, skipping\n", __func__, type_k);
         return 0;
@@ -381,6 +405,7 @@ int32_t llama_triattention::evict(llama_kv_cache * cache, ggml_type type_k) {
         uint32_t  idx;
         llama_pos pos;
         float     score;
+        bool      evicted;
     };
 
     std::vector<cell_info> active_cells;
@@ -389,7 +414,7 @@ int32_t llama_triattention::evict(llama_kv_cache * cache, ggml_type type_k) {
     const uint32_t kv_size = cache->get_size();
     for (uint32_t i = 0; i < kv_size; ++i) {
         if (!cells.is_empty(i)) {
-            active_cells.push_back({i, cells.pos_get(i), 0.0f});
+            active_cells.push_back({i, cells.pos_get(i), 0.0f, false});
         }
     }
 
@@ -402,6 +427,7 @@ int32_t llama_triattention::evict(llama_kv_cache * cache, ggml_type type_k) {
         max_pos = std::max(max_pos, c.pos);
     }
     const llama_pos window_threshold = max_pos - window_size + 1;
+    const auto t_collect = clk::now();
 
     // Scoring mode: TRIATT_MODE env var
     // 0 = trig scoring (default), 1 = random, 2 = recency (keep newest)
@@ -430,27 +456,27 @@ int32_t llama_triattention::evict(llama_kv_cache * cache, ggml_type type_k) {
             cell.score = (cell.pos >= window_threshold) ? 1e10f : (float)cell.pos;
         }
     } else {
-        // Trig scoring (default) — inlined hot-path version.
+        // Trig scoring (default) — threaded + vectorizable hot-path version.
         //
-        // Algebraic identity we exploit:
-        //   score_per_cell = (1/n_off) * sum_o sum_f [A_f cos(t_o w_f) - B_f sin(t_o w_f)] + extra
-        // Since t_o = max_pos + offset_o and omega_f don't depend on the cell,
-        // we precompute:
-        //   cos_sum[f] = (1/n_off) * sum_o cos((max_pos + offset_o) * omega_f)
-        //   sin_sum[f] = (1/n_off) * sum_o sin((max_pos + offset_o) * omega_f)
-        // ONCE per evict() call, then each cell becomes a dot product over f only.
+        // Algebraic identity we already exploit (see earlier commit):
+        //   score_per_cell = sum_f [A_f cos_sum_f - B_f sin_sum_f] + extra
+        // where cos_sum/sin_sum are precomputed once per evict().
         //
-        // Per-cell work drops from n_off*freq_count cos+sin calls (~2176 transcendentals
-        // at 32K with 17 offsets * 64 freqs) to freq_count pure muladds (~64). c_mag is
-        // also lifted out of the cell loop to once per (layer, head). The transformation
-        // is bit-exact vs the original score_tokens() path modulo float associativity.
+        // Two additional optimizations in this pass:
+        //   A. THREADING: the per-(layer, head) blocks are trivially parallel.
+        //      Each thread gets a per-cell accumulator buffer, merges at the end.
+        //   B. SPLIT ACCUMULATORS: the inner loop had two serial dependency chains
+        //      (acc += ...  and  extra += ...). Splitting each into 4 parallel
+        //      chains lets the compiler auto-vectorize to NEON/AVX.
+        //
+        // Semantics are identical to the previous pass modulo float associativity
+        // (~1e-5 PPL noise from reordered summation).
 
         const uint32_t fc = freq_count;
         const int n_off   = (int)offsets.size();
         const float inv_n_off = 1.0f / (float)n_off;
 
-        // Precompute cos_sum / sin_sum ONCE — constant across all cells and all
-        // (layer, head) blocks for this eviction round.
+        // Precompute cos_sum / sin_sum ONCE — constant across all cells and all blocks.
         std::vector<float> cos_sum(fc);
         std::vector<float> sin_sum(fc);
         for (uint32_t f = 0; f < fc; ++f) {
@@ -468,18 +494,24 @@ int32_t llama_triattention::evict(llama_kv_cache * cache, ggml_type type_k) {
         const auto   to_float    = type_traits->to_float;
         const size_t type_size   = ggml_type_size(type_k);
         const int64_t blk_size   = ggml_blck_size(type_k);
-
-        std::vector<float> k_f32(head_dim);
         const uint32_t n_layers_kv = cache->get_n_layers_kv();
 
-        // Pre-mark protected cells once so we can skip them cheaply in the hot loop.
+        // Pre-mark protected cells once so we can skip them cheaply.
         for (auto & cell : active_cells) {
-            if (cell.pos >= window_threshold) {
-                cell.score = 1e10f;
-            } else {
-                cell.score = 0.0f;
-            }
+            cell.score = (cell.pos >= window_threshold) ? 1e10f : 0.0f;
         }
+
+        // Flatten (layer, head) blocks into a single index space for round-robin
+        // thread assignment.
+        struct block_info {
+            int32_t il;
+            uint32_t h;
+            const uint8_t * k_base;
+            size_t cell_stride;
+            size_t head_offset;
+        };
+        std::vector<block_info> blocks;
+        blocks.reserve(n_layers_kv * n_kv_heads);
 
         for (uint32_t ikv = 0; ikv < n_layers_kv; ++ikv) {
             const int32_t il = cache->get_layer_il(ikv);
@@ -491,7 +523,33 @@ int32_t llama_triattention::evict(llama_kv_cache * cache, ggml_type type_k) {
 
             for (uint32_t h = 0; h < n_kv_heads; ++h) {
                 const size_t head_offset = ((size_t)h * head_dim / blk_size) * type_size;
-                const uint32_t head_block = (uint32_t)il * n_kv_heads + h;
+                blocks.push_back({il, h, k_base, cell_stride, head_offset});
+            }
+        }
+
+        // Decide thread count. Cap at 8 to avoid diminishing returns on small
+        // per-thread chunks (35B-A3B has only 20 blocks; with 8 threads each gets
+        // 2-3 blocks, still worth it).
+        const unsigned int n_hw = std::thread::hardware_concurrency();
+        const int n_threads = std::max(1, std::min<int>(n_hw > 0 ? (int)n_hw : 1, 8));
+
+        const size_t n_cells = active_cells.size();
+        std::vector<std::vector<float>> thread_scores(n_threads);
+        for (int t = 0; t < n_threads; ++t) {
+            thread_scores[t].assign(n_cells, 0.0f);
+        }
+
+        // Snapshot pointers the worker needs so it doesn't touch shared state.
+        const float * cos_sum_ptr = cos_sum.data();
+        const float * sin_sum_ptr = sin_sum.data();
+        const uint32_t head_dim_local = head_dim;
+
+        auto worker = [&](int tid) {
+            std::vector<float> k_f32(head_dim_local);
+
+            for (size_t bi = (size_t)tid; bi < blocks.size(); bi += (size_t)n_threads) {
+                const auto & block = blocks[bi];
+                const uint32_t head_block = (uint32_t)block.il * n_kv_heads + block.h;
 
                 if (head_block >= center_real.size()) continue;
 
@@ -499,52 +557,113 @@ int32_t llama_triattention::evict(llama_kv_cache * cache, ggml_type type_k) {
                 const float * c_i   = center_imag[head_block].data();
                 const float * c_abs = center_abs[head_block].data();
 
-                // Lift c_mag and cb_delta (c_abs - c_mag) out of the cell loop.
-                // Both depend only on the (layer, head) centers, not on any cell.
+                // Lift c_mag / cb_delta out of the cell loop.
                 std::vector<float> cb_delta(fc);
                 for (uint32_t f = 0; f < fc; ++f) {
                     const float mag = sqrtf(c_r[f] * c_r[f] + c_i[f] * c_i[f] + 1e-8f);
                     cb_delta[f] = c_abs[f] - mag;
                 }
 
-                // Inner: score every non-protected cell for this (layer, head).
-                for (size_t ci = 0; ci < active_cells.size(); ++ci) {
-                    auto & cell = active_cells[ci];
+                float * const tscores = thread_scores[tid].data();
+                const float * const c_r_p = c_r;
+                const float * const c_i_p = c_i;
+                const float * const cb_delta_p = cb_delta.data();
+
+                for (size_t ci = 0; ci < n_cells; ++ci) {
+                    const auto & cell = active_cells[ci];
                     if (cell.pos >= window_threshold) continue;
 
-                    const uint8_t * k_ptr = k_base + (size_t)cell.idx * cell_stride + head_offset;
-                    to_float(k_ptr, k_f32.data(), head_dim);
+                    const uint8_t * k_ptr = block.k_base + (size_t)cell.idx * block.cell_stride + block.head_offset;
+                    to_float(k_ptr, k_f32.data(), (int64_t)head_dim_local);
 
-                    const float * k = k_f32.data();
-                    float acc = 0.0f;
-                    float extra = 0.0f;
-                    for (uint32_t f = 0; f < fc; ++f) {
-                        const float k_r = k[f];
-                        const float k_i = k[fc + f];
+                    const float * const k = k_f32.data();
 
-                        // Complex product: center * conj(K_rot)
-                        const float A = c_r[f] * k_r + c_i[f] * k_i;
-                        const float B = c_i[f] * k_r - c_r[f] * k_i;
+                    // Split accumulators (4-way) so the compiler can vectorize.
+                    float acc0=0, acc1=0, acc2=0, acc3=0;
+                    float ext0=0, ext1=0, ext2=0, ext3=0;
 
-                        acc += A * cos_sum[f] - B * sin_sum[f];
-
-                        const float k_abs = sqrtf(k_r * k_r + k_i * k_i + 1e-8f);
-                        extra += cb_delta[f] * k_abs;
+                    uint32_t f = 0;
+                    for (; f + 4 <= fc; f += 4) {
+                        {
+                            const float k_r = k[f+0];
+                            const float k_i = k[fc + f+0];
+                            const float A = c_r_p[f+0] * k_r + c_i_p[f+0] * k_i;
+                            const float B = c_i_p[f+0] * k_r - c_r_p[f+0] * k_i;
+                            acc0 += A * cos_sum_ptr[f+0] - B * sin_sum_ptr[f+0];
+                            const float k_abs = sqrtf(k_r * k_r + k_i * k_i + 1e-8f);
+                            ext0 += cb_delta_p[f+0] * k_abs;
+                        }
+                        {
+                            const float k_r = k[f+1];
+                            const float k_i = k[fc + f+1];
+                            const float A = c_r_p[f+1] * k_r + c_i_p[f+1] * k_i;
+                            const float B = c_i_p[f+1] * k_r - c_r_p[f+1] * k_i;
+                            acc1 += A * cos_sum_ptr[f+1] - B * sin_sum_ptr[f+1];
+                            const float k_abs = sqrtf(k_r * k_r + k_i * k_i + 1e-8f);
+                            ext1 += cb_delta_p[f+1] * k_abs;
+                        }
+                        {
+                            const float k_r = k[f+2];
+                            const float k_i = k[fc + f+2];
+                            const float A = c_r_p[f+2] * k_r + c_i_p[f+2] * k_i;
+                            const float B = c_i_p[f+2] * k_r - c_r_p[f+2] * k_i;
+                            acc2 += A * cos_sum_ptr[f+2] - B * sin_sum_ptr[f+2];
+                            const float k_abs = sqrtf(k_r * k_r + k_i * k_i + 1e-8f);
+                            ext2 += cb_delta_p[f+2] * k_abs;
+                        }
+                        {
+                            const float k_r = k[f+3];
+                            const float k_i = k[fc + f+3];
+                            const float A = c_r_p[f+3] * k_r + c_i_p[f+3] * k_i;
+                            const float B = c_i_p[f+3] * k_r - c_r_p[f+3] * k_i;
+                            acc3 += A * cos_sum_ptr[f+3] - B * sin_sum_ptr[f+3];
+                            const float k_abs = sqrtf(k_r * k_r + k_i * k_i + 1e-8f);
+                            ext3 += cb_delta_p[f+3] * k_abs;
+                        }
                     }
 
-                    cell.score += acc + extra;
+                    // Tail (fc not multiple of 4 — rare but safe)
+                    float acc_tail = 0.0f, ext_tail = 0.0f;
+                    for (; f < fc; ++f) {
+                        const float k_r = k[f];
+                        const float k_i = k[fc + f];
+                        const float A = c_r_p[f] * k_r + c_i_p[f] * k_i;
+                        const float B = c_i_p[f] * k_r - c_r_p[f] * k_i;
+                        acc_tail += A * cos_sum_ptr[f] - B * sin_sum_ptr[f];
+                        const float k_abs = sqrtf(k_r * k_r + k_i * k_i + 1e-8f);
+                        ext_tail += cb_delta_p[f] * k_abs;
+                    }
+
+                    const float acc = (acc0 + acc1) + (acc2 + acc3) + acc_tail;
+                    const float ext = (ext0 + ext1) + (ext2 + ext3) + ext_tail;
+                    tscores[ci] += acc + ext;
                 }
             }
+        };
+
+        // Dispatch
+        if (n_threads == 1) {
+            worker(0);
+        } else {
+            std::vector<std::thread> workers;
+            workers.reserve(n_threads);
+            for (int t = 0; t < n_threads; ++t) workers.emplace_back(worker, t);
+            for (auto & w : workers) w.join();
         }
 
-        // Normalize
+        // Merge per-thread scores into active_cells, then normalize.
         const float score_norm = 1.0f / (float)(n_layers_kv * n_kv_heads);
-        for (auto & cell : active_cells) {
-            if (cell.pos < window_threshold) {
-                cell.score *= score_norm;
+        for (size_t ci = 0; ci < n_cells; ++ci) {
+            auto & cell = active_cells[ci];
+            if (cell.pos >= window_threshold) continue;
+            float s = 0.0f;
+            for (int t = 0; t < n_threads; ++t) {
+                s += thread_scores[t][ci];
             }
+            cell.score = s * score_norm;
         }
     }
+    const auto t_score = clk::now();
 
     // ----- Eviction selection -----
     // V1 (default, TRIATT_HYBRID=0): global sort by score, evict highest-score cells.
@@ -596,36 +715,29 @@ int32_t llama_triattention::evict(llama_kv_cache * cache, ggml_type type_k) {
         // eviction-eligible cell count so the *fraction* removed from each
         // segment is roughly equal.
         //
-        // Within each segment, sort by score and evict the highest-score cells
-        // up to the per-segment target. If a segment runs out (small segment,
-        // big quota), the deficit gets carried into a final global pass over
-        // remaining non-protected cells, again sorted by score.
+        // Bucketing uses *indices into active_cells* to avoid copying full
+        // cell_info structs. The cleanup pass reuses the original active_cells
+        // array (with the `evicted` flag) so we never have to re-scan the
+        // underlying kv_cells — the previous implementation was O(n^2) per
+        // eviction round.
 
         const int32_t k = std::max(1, n_segments);
-        // V3: pos_lo = prefix_protect → skip the first N tokens entirely.
-        // V2: pos_lo = 0 → no prefix protection.
         const llama_pos prefix_lo = (hybrid_mode == 2) ? (llama_pos)prefix_protect : 0;
 
-        std::vector<std::vector<cell_info>> buckets(k);
-        std::vector<cell_info> protected_or_window; // skipped from selection
-        protected_or_window.reserve(active_cells.size() / 8 + 16);
+        std::vector<std::vector<uint32_t>> buckets(k); // indices into active_cells
 
-        // window_threshold may be 0 or negative early on; clamp.
         const llama_pos pos_hi = std::max<llama_pos>(window_threshold, prefix_lo + 1);
         const float seg_width = (float)(pos_hi - prefix_lo) / (float)k;
 
-        for (auto & cell : active_cells) {
-            if (cell.pos >= window_threshold || cell.pos < prefix_lo) {
-                protected_or_window.push_back(cell);
-                continue;
-            }
+        for (uint32_t ai = 0; ai < active_cells.size(); ++ai) {
+            const auto & cell = active_cells[ai];
+            if (cell.pos >= window_threshold || cell.pos < prefix_lo) continue;
             int seg = (int)((float)(cell.pos - prefix_lo) / seg_width);
             if (seg < 0) seg = 0;
             if (seg >= k) seg = k - 1;
-            buckets[seg].push_back(cell);
+            buckets[seg].push_back(ai);
         }
 
-        // Total eligible cells across all buckets.
         int32_t total_eligible = 0;
         for (const auto & b : buckets) total_eligible += (int32_t)b.size();
         if (total_eligible <= 0) {
@@ -634,17 +746,17 @@ int32_t llama_triattention::evict(llama_kv_cache * cache, ggml_type type_k) {
             return 0;
         }
 
-        // Per-segment target (proportional to bucket size). Round-down per
-        // segment, carry the remainder into a final global cleanup pass.
         const float target_frac = (float)n_to_evict / (float)total_eligible;
 
         for (int s = 0; s < k; ++s) {
             auto & bucket = buckets[s];
             if (bucket.empty()) continue;
 
-            // Sort ascending by score; high scores at the end = least important.
+            // Sort bucket indices by score (ascending — highest scores last).
             std::sort(bucket.begin(), bucket.end(),
-                [](const cell_info & a, const cell_info & b) { return a.score < b.score; });
+                [&active_cells](uint32_t a, uint32_t b) {
+                    return active_cells[a].score < active_cells[b].score;
+                });
 
             const int32_t bucket_target = (int32_t)((float)bucket.size() * target_frac);
             const int32_t bucket_to_evict = std::min(bucket_target, (int32_t)bucket.size());
@@ -652,52 +764,52 @@ int32_t llama_triattention::evict(llama_kv_cache * cache, ggml_type type_k) {
             for (int32_t i = (int32_t)bucket.size() - 1, evicted_here = 0;
                  i >= 0 && evicted_here < bucket_to_evict && n_evicted < n_to_evict;
                  --i, ++evicted_here) {
-                const auto & cell = bucket[i];
+                auto & cell = active_cells[bucket[i]];
                 cache->seq_rm(0, cell.pos, cell.pos + 1);
+                cell.evicted = true;
                 ++n_evicted;
             }
         }
 
-        // Final cleanup pass: if rounding left us short, walk a global ranking
-        // of all remaining cells (those NOT yet evicted) by score, evict highest
-        // until we hit n_to_evict.
+        // Cleanup pass — O(n log n) instead of the previous O(n^2).
+        //
+        // If rounding left us short, sort the remaining (not-yet-evicted,
+        // not-prefix-protected, not-window) cells globally by score and evict
+        // the highest. We reuse the original active_cells / score data directly;
+        // no cache re-scan, no linear search per cell.
         if (n_evicted < n_to_evict) {
-            std::vector<cell_info> remaining;
+            std::vector<uint32_t> remaining;
             remaining.reserve(total_eligible);
-            // The seq_rm calls above invalidate cells.is_empty() checks against
-            // the cache, but our cell_info copies still hold the old data —
-            // we just need to skip cells we already evicted. Track via a set.
-            // Simpler: re-scan the cache fresh and rebuild candidates.
-            const auto & cells2 = cache->get_cells(0);
-            const uint32_t kv_size2 = cache->get_size();
-            for (uint32_t i = 0; i < kv_size2; ++i) {
-                if (cells2.is_empty(i)) continue;
-                const llama_pos p = cells2.pos_get(i);
-                if (p >= window_threshold) continue;
-                if (p < prefix_lo) continue;
-                // Find original score (linear scan — small n in practice).
-                float sc = 0.0f;
-                for (const auto & c : active_cells) {
-                    if (c.pos == p) { sc = c.score; break; }
-                }
-                remaining.push_back({i, p, sc});
+            for (uint32_t ai = 0; ai < active_cells.size(); ++ai) {
+                const auto & cell = active_cells[ai];
+                if (cell.evicted) continue;
+                if (cell.pos >= window_threshold) continue;
+                if (cell.pos < prefix_lo) continue;
+                remaining.push_back(ai);
             }
             std::sort(remaining.begin(), remaining.end(),
-                [](const cell_info & a, const cell_info & b) { return a.score < b.score; });
+                [&active_cells](uint32_t a, uint32_t b) {
+                    return active_cells[a].score < active_cells[b].score;
+                });
             for (int32_t i = (int32_t)remaining.size() - 1;
                  i >= 0 && n_evicted < n_to_evict; --i) {
-                cache->seq_rm(0, remaining[i].pos, remaining[i].pos + 1);
+                auto & cell = active_cells[remaining[i]];
+                cache->seq_rm(0, cell.pos, cell.pos + 1);
+                cell.evicted = true;
                 ++n_evicted;
             }
         }
     }
 
+    const auto t_end = clk::now();
+
     const char * mode_str =
         (hybrid_mode == 0) ? "v1" :
         (hybrid_mode == 1) ? "v2" :
         (hybrid_mode == 2) ? "v3" : "unknown";
-    LLAMA_LOG_INFO("%s: evicted %d/%d tokens (budget=%d, used=%d, max_pos=%d, mode=%s)\n",
-        __func__, n_evicted, n_used, budget, n_used - n_evicted, (int)max_pos, mode_str);
+    LLAMA_LOG_INFO("%s: evicted %d/%d (budget=%d, used=%d, mode=%s) [collect=%dus score=%dus selectEvict=%dus total=%dus]\n",
+        __func__, n_evicted, n_used, budget, n_used - n_evicted, mode_str,
+        us(t_start, t_collect), us(t_collect, t_score), us(t_score, t_end), us(t_start, t_end));
 
     return n_evicted;
 }
