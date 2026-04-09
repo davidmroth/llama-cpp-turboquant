@@ -984,6 +984,18 @@ extern "C" {
     // If true, all model tensors are activated during llama_decode() to load and cache their weights.
     LLAMA_API void llama_set_warmup(struct llama_context * ctx, bool warmup);
 
+    // TriAttention: self-calibrating trigonometric KV cache token eviction
+    // Inspired by arXiv:2604.04921 (Mao et al.)
+    // Automatically calibrates from the KV cache during inference — no external files needed.
+    // rope_theta and head_dim are auto-detected if set to 0.
+    LLAMA_API void llama_triattention_enable(
+            struct llama_context * ctx,
+            int32_t                budget,        // max tokens to retain (e.g. 2048)
+            int32_t                divide_length,  // eviction interval (e.g. 128)
+            int32_t                window_size,    // protected recent tokens (e.g. 128)
+            float                  rope_theta,     // RoPE theta (0 = auto from model)
+            int32_t                head_dim);       // head dimension (0 = auto from model)
+
     // Set abort callback
     LLAMA_API void llama_set_abort_callback(struct llama_context * ctx, ggml_abort_callback abort_callback, void * abort_callback_data);
 

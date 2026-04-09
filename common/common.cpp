@@ -1292,6 +1292,23 @@ common_init_result_ptr common_init_from_params(common_params & params) {
         params.ctx_shift = false;
     }
 
+    // TriAttention: self-calibrating KV cache eviction
+    if (params.triatt_budget > 0) {
+        // Pass 0 for both rope_theta and head_dim — the engine reads them from
+        // the model's hparams (n_embd_head_k() for head_dim, rope_freq_base_train
+        // for theta). Computing n_embd / n_head here is wrong for fused-QKV
+        // models like qwen35 where n_embd_head_k != n_embd / n_head.
+        llama_triattention_enable(lctx,
+            params.triatt_budget,
+            params.triatt_divide,
+            params.triatt_window,
+            /* rope_theta */ 0.0f,
+            /* head_dim   */ 0);
+
+        LOG_INF("%s: TriAttention enabled (budget=%d, divide=%d, window=%d, auto-detected head_dim/n_rot/theta from model)\n",
+            __func__, params.triatt_budget, params.triatt_divide, params.triatt_window);
+    }
+
     if (!params.control_vectors.empty()) {
         if (params.control_vector_layer_start <= 0) params.control_vector_layer_start = 1;
         if (params.control_vector_layer_end   <= 0) params.control_vector_layer_end   = llama_model_n_layer(model);

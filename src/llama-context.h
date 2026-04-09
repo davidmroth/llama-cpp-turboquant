@@ -5,11 +5,13 @@
 #include "llama-graph.h"
 #include "llama-adapter.h"
 #include "llama-impl.h"
+#include "llama-triattention.h"
 
 #include "ggml-cpp.h"
 #include "ggml-opt.h"
 
 #include <map>
+#include <memory>
 #include <vector>
 
 struct llama_model;
@@ -104,6 +106,9 @@ struct llama_context {
     void set_embeddings (bool value);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
+
+    // TriAttention: enable self-calibrating KV cache eviction
+    void set_triattention(std::unique_ptr<llama_triattention> triatt);
 
     void set_adapters_lora(llama_adapter_lora ** adapters, size_t n_adapters, float * scales);
 
@@ -264,6 +269,9 @@ private:
     llama_cross cross; // TODO: tmp for handling cross-attention - need something better probably
 
     std::unique_ptr<llama_memory_i> memory;
+
+    // TriAttention KV cache eviction (self-calibrating)
+    std::unique_ptr<llama_triattention> triattention;
 
     // decode output (2-dimensional array: [n_outputs][n_vocab])
     buffer_view<float> logits = {nullptr, 0};

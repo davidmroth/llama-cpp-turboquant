@@ -549,6 +549,11 @@ struct common_params {
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
 
+    // TriAttention: self-calibrating KV cache eviction (arXiv:2604.04921)
+    int32_t triatt_budget       = 0;     // 0 = disabled, >0 = max KV tokens to retain
+    int32_t triatt_divide       = 128;   // eviction check interval
+    int32_t triatt_window       = 128;   // recent tokens always protected
+
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 
     // multimodal models (see tools/mtmd)

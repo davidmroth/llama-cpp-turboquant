@@ -4,7 +4,9 @@
 #include "llama-impl.h"
 #include "llama-batch.h"
 #include "llama-io.h"
+#include "llama-kv-cache.h"
 #include "llama-memory.h"
+#include "llama-memory-hybrid.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
 #include "llama-ext.h"
@@ -1061,6 +1063,14 @@ void llama_context::set_warmup(bool value) {
     //sched_need_reserve = true;
 }
 
+void llama_context::set_triattention(std::unique_ptr<llama_triattention> triatt) {
+    // Install eval callback to capture pre-RoPE Q during forward passes
+    cparams.cb_eval           = llama_triattention::eval_callback;
+    cparams.cb_eval_user_data = triatt.get();
+
+    triattention = std::move(triatt);
+}
+
 bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
     if (!sampler && sampling.samplers.count(seq_id) == 0) {
         return true;
@@ -1611,6 +1621,27 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
     // handle any pending shifts/copies
     memory_update(false);
+
+    // TriAttention: evict low-importance KV cache tokens if needed.
+    // Some architectures (qwen35, qwen35moe, etc.) use llama_memory_hybrid which
+    // wraps an internal llama_kv_cache for the attention layers alongside a
+    // llama_memory_recurrent for the SSM/linear layers. For those models we
+    // extract the attention kv cache via get_mem_attn().
+    if (triattention) {
+        llama_kv_cache * kv_cache = dynamic_cast<llama_kv_cache *>(memory.get());
+        if (!kv_cache) {
+            if (auto * hybrid = dynamic_cast<llama_memory_hybrid *>(memory.get())) {
+                kv_cache = hybrid->get_mem_attn();
+            }
+        }
+        if (kv_cache) {
+            const auto & cells = kv_cache->get_cells(0);
+            const int32_t n_used = (int32_t)cells.get_used();
+            if (triattention->should_evict(n_used)) {
+                triattention->evict(kv_cache, kv_cache->type_k());
+            }
+        }
+    }
 
     llama_memory_context_ptr mctx;
 
@@ -3087,6 +3118,38 @@ void llama_set_causal_attn(llama_context * ctx, bool causal_attn) {
 
 void llama_set_warmup(llama_context * ctx, bool warmup) {
     ctx->set_warmup(warmup);
+}
+
+void llama_triattention_enable(
+        llama_context * ctx,
+        int32_t         budget,
+        int32_t         divide_length,
+        int32_t         window_size,
+        float           rope_theta,
+        int32_t         head_dim) {
+    auto triatt = std::make_unique<llama_triattention>();
+    triatt->budget        = budget;
+    triatt->divide_length = divide_length;
+    triatt->window_size   = window_size;
+
+    // Get model info. For hybrid/partial-RoPE models (qwen35, qwen35moe, etc.)
+    // head_dim comes from hparams.n_embd_head_k() (not n_embd / n_head, which
+    // is wrong for fused-QKV layouts), and n_rot is from hparams.n_rot().
+    const auto & model   = ctx->get_model();
+    const auto & hparams = model.hparams;
+
+    const uint32_t n_head    = llama_model_n_head(&model);
+    const uint32_t n_head_kv = llama_model_n_head_kv(&model);
+    const uint32_t n_layer   = llama_model_n_layer(&model);
+    const uint32_t hd        = (head_dim > 0) ? (uint32_t)head_dim
+                             : hparams.n_embd_head_k();
+    const uint32_t nr        = hparams.n_rot();
+    const float theta        = (rope_theta > 0.0f) ? rope_theta
+                             : hparams.rope_freq_base_train;
+
+    triatt->init_constants(theta, hd, n_head, n_head_kv, n_layer, nr);
+
+    ctx->set_triattention(std::move(triatt));
 }
 
 void llama_synchronize(llama_context * ctx) {

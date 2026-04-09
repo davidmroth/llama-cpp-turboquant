@@ -155,6 +155,13 @@ public:
     ggml_type type_k() const;
     ggml_type type_v() const;
 
+    // TriAttention: accessors for KV cache scoring/calibration
+    uint32_t get_n_layers_kv() const { return (uint32_t) layers.size(); }
+    int32_t  get_layer_il(uint32_t ikv) const { return layers[ikv].il; }
+    const void * get_k_data(uint32_t ikv) const { return layers[ikv].k->data; }
+    uint64_t     get_k_ne0 (uint32_t ikv) const { return layers[ikv].k->ne[0]; }
+    const llama_kv_cells & get_cells(uint32_t stream = 0) const { return v_cells[stream]; }
+
     //
     // graph_build API
     //

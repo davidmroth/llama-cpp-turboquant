@@ -2031,6 +2031,35 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.cache_type_v = kv_cache_type_from_str(value);
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_V"));
+    // TriAttention: self-calibrating KV cache eviction (arXiv:2604.04921)
+    add_opt(common_arg(
+        {"--triatt-budget"}, "N",
+        "enable TriAttention KV cache eviction with max N tokens retained\n"
+        "self-calibrates from the KV cache — no external files needed",
+        [](common_params & params, int value) {
+            params.triatt_budget = value;
+        }
+    ).set_env("LLAMA_ARG_TRIATT_BUDGET"));
+    add_opt(common_arg(
+        {"--triatt-divide"}, "N",
+        string_format(
+            "TriAttention: eviction check interval in tokens (default: %d)",
+            params.triatt_divide
+        ),
+        [](common_params & params, int value) {
+            params.triatt_divide = value;
+        }
+    ).set_env("LLAMA_ARG_TRIATT_DIVIDE"));
+    add_opt(common_arg(
+        {"--triatt-window"}, "N",
+        string_format(
+            "TriAttention: recent tokens always protected from eviction (default: %d)",
+            params.triatt_window
+        ),
+        [](common_params & params, int value) {
+            params.triatt_window = value;
+        }
+    ).set_env("LLAMA_ARG_TRIATT_WINDOW"));
     add_opt(common_arg(
         {"--hellaswag"},
         "compute HellaSwag score over random tasks from datafile supplied with -f",
