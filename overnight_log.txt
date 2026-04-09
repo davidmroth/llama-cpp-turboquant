@@ -1,0 +1,105 @@
+============================================
+TriAttention Overnight Validation
+Started: Wed Apr  8 23:48:01 CDT 2026
+============================================
+
+=== PRIORITY 1: PPL at 32K ===
+23:48:01 PPL: Qwen2.5-7B c=32768 ret=100% budget=0
+  PPL== evictions=0 time=59s
+23:49:00 PPL: Qwen2.5-7B c=32768 ret=90% budget=29491
+  PPL== evictions=6 time=109s
+23:50:49 PPL: Qwen2.5-7B c=32768 ret=85% budget=27853
+  PPL== evictions=9 time=130s
+23:52:59 PPL: Qwen3.5-27B c=32768 ret=100% budget=0
+  PPL== evictions=0 time=156s
+23:55:35 PPL: Qwen3.5-27B c=32768 ret=90% budget=29491
+  PPL== evictions=0 time=156s
+23:58:11 PPL: Qwen3.5-27B c=32768 ret=85% budget=27853
+  PPL== evictions=0 time=157s
+00:00:48 PPL: Qwen3.5-35B-A3B c=32768 ret=100% budget=0
+  PPL== evictions=0 time=37s
+00:01:25 PPL: Qwen3.5-35B-A3B c=32768 ret=90% budget=29491
+  PPL== evictions=0 time=34s
+00:01:59 PPL: Qwen3.5-35B-A3B c=32768 ret=85% budget=27853
+  PPL== evictions=0 time=34s
+
+=== PRIORITY 1 COMPLETE ===
+
+=== PRIORITY 2: NIAH at 32K ===
+00:02:33 NIAH: Qwen2.5-7B c=32768 ret=100% needle@100
+  Result: PASS (evictions=0, time=54s)
+  Output: PURPLE ELEPHANT 7742
+00:03:27 NIAH: Qwen2.5-7B c=32768 ret=100% needle@16000
+  Result: PASS (evictions=0, time=52s)
+  Output: PURPLE ELEPHANT 7742
+00:04:19 NIAH: Qwen2.5-7B c=32768 ret=100% needle@30000
+  Result: PASS (evictions=0, time=53s)
+  Output: PURPLE ELEPHANT 7742
+00:05:12 NIAH: Qwen2.5-7B c=32768 ret=90% needle@100
+  Result: PASS (evictions=2, time=71s)
+  Output: PURPLE ELEPHANT 7742
+00:06:23 NIAH: Qwen2.5-7B c=32768 ret=90% needle@16000
+  Result: PASS (evictions=2, time=70s)
+  Output: PURPLE ELEPHANT 7742
+00:07:33 NIAH: Qwen2.5-7B c=32768 ret=90% needle@30000
+  Result: PASS (evictions=2, time=70s)
+  Output: August 31
+00:08:43 NIAH: Qwen3.5-27B c=32768 ret=100% needle@100
+  Result: PASS (evictions=0, time=147s)
+  Output: 
+00:11:10 NIAH: Qwen3.5-27B c=32768 ret=100% needle@16000
+  Result: PASS (evictions=0, time=147s)
+  Output: 
+00:13:37 NIAH: Qwen3.5-27B c=32768 ret=100% needle@30000
+  Result: PASS (evictions=0, time=146s)
+  Output: 
+00:16:03 NIAH: Qwen3.5-27B c=32768 ret=90% needle@100
+  Result: PASS (evictions=0, time=147s)
+  Output: 
+00:18:30 NIAH: Qwen3.5-27B c=32768 ret=90% needle@16000
+  Result: PASS (evictions=0, time=147s)
+  Output: 
+00:20:57 NIAH: Qwen3.5-27B c=32768 ret=90% needle@30000
+  Result: PASS (evictions=0, time=147s)
+  Output: 
+00:23:25 NIAH: Qwen3.5-35B-A3B c=32768 ret=100% needle@100
+  Result: PASS (evictions=0, time=30s)
+  Output: PURPLE ELEPHANT 7742
+00:23:55 NIAH: Qwen3.5-35B-A3B c=32768 ret=100% needle@16000
+  Result: PASS (evictions=0, time=30s)
+  Output: PURPLE ELEPHANT 7742
+00:24:25 NIAH: Qwen3.5-35B-A3B c=32768 ret=100% needle@30000
+  Result: PASS (evictions=0, time=31s)
+  Output: PURPLE ELEPHANT 7742
+00:24:56 NIAH: Qwen3.5-35B-A3B c=32768 ret=90% needle@100
+  Result: PASS (evictions=0, time=30s)
+  Output: PURPLE ELEPHANT 7742
+00:25:26 NIAH: Qwen3.5-35B-A3B c=32768 ret=90% needle@16000
+  Result: PASS (evictions=0, time=30s)
+  Output: PURPLE ELEPHANT 7742
+00:25:56 NIAH: Qwen3.5-35B-A3B c=32768 ret=90% needle@30000
+  Result: PASS (evictions=0, time=31s)
+  Output: PURPLE ELEPHANT 7742
+
+=== PRIORITY 2 COMPLETE ===
+
+=== PRIORITY 3: PPL at 64K ===
+00:26:27 PPL: Qwen3.5-27B c=65536 ret=100% budget=0
+  PPL== evictions=0 time=357s
+00:32:24 PPL: Qwen3.5-27B c=65536 ret=90% budget=58982
+  PPL== evictions=0 time=359s
+00:38:23 PPL: Qwen3.5-27B c=65536 ret=85% budget=55706
+  PPL== evictions=0 time=360s
+00:44:23 PPL: Qwen3.5-35B-A3B c=65536 ret=100% budget=0
+  PPL== evictions=0 time=88s
+00:45:51 PPL: Qwen3.5-35B-A3B c=65536 ret=90% budget=58982
+  PPL== evictions=0 time=86s
+00:47:17 PPL: Qwen3.5-35B-A3B c=65536 ret=85% budget=55706
+  PPL== evictions=0 time=86s
+
+=== PRIORITY 3 COMPLETE ===
+
+============================================
+ALL TESTS COMPLETE: Thu Apr  9 00:48:43 CDT 2026
+Results: /Users/tom/local_llms/llama.cpp/overnight_results.jsonl
+============================================

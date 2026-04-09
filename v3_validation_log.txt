@@ -1,0 +1,23 @@
+============================================
+V3 Hybrid (prefix=256 + per-segment quota) — 7B @ 32K, 90% only
+Started: Thu Apr  9 09:47:28 CDT 2026
+============================================
+09:47:28 
+09:47:28 ========== TASK 1: PPL @ 32K (3 chunks) ==========
+09:47:28 >>> PPL V3 hybrid 90% (budget=29491, TRIATT_HYBRID=2, prefix=256)
+09:52:50   Final estimate: PPL = 6.8713 +/- 0.07528
+09:52:50   evict_rounds=18 mode=v3 runtime=322s
+09:52:50 
+09:52:50 ========== TASK 2: NIAH @ 32K (start/middle/end) ==========
+09:52:50 >>> NIAH V3 hybrid 90% @400 (budget=29491, TRIATT_HYBRID=2, prefix=256)
+09:54:02   PASS (runtime=72s, evictions=2)
+09:54:02   generated:  PURPLE ELEPHANT 7742 The secret code word mentioned earlier is "PURPLE ELEPHANT 7742." 
+09:54:02 >>> NIAH V3 hybrid 90% @65000 (budget=29491, TRIATT_HYBRID=2, prefix=256)
+09:55:14   PASS (runtime=72s, evictions=2)
+09:55:14   generated:  PURPLE ELEPHANT 7742. @.@ PURPLE ELEPHANT 7742. @.@ Given 
+09:55:14 >>> NIAH V3 hybrid 90% @120000 (budget=29491, TRIATT_HYBRID=2, prefix=256)
+09:56:26   PASS (runtime=72s, evictions=2)
+09:56:26   generated:  PURPLE ELEPHANT 7742 The secret code word mentioned earlier is "PURPLE ELEPHANT 7742." 
+============================================
+Done: Thu Apr  9 09:56:26 CDT 2026
+============================================

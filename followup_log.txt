@@ -1,0 +1,73 @@
+============================================
+TriAttention Follow-Up Tests
+Started: Thu Apr  9 03:52:39 CDT 2026
+============================================
+03:52:39 
+03:52:39 ========== TASK 1: 7B @ 32K Replication (3 chunks) ==========
+03:52:39 >>> 7B 32K baseline (c=32768, budget=0) 
+03:55:30   Final estimate: PPL = 6.8504 +/- 0.07496
+03:55:30   evictions=0 runtime=171s
+03:55:30 >>> 7B 32K 90% (c=32768, budget=29491) 
+04:00:50   Final estimate: PPL = 6.9327 +/- 0.07614
+04:00:50   evictions=18 runtime=320s
+04:00:50 >>> 7B 32K 85% (c=32768, budget=27853) 
+04:07:11   Final estimate: PPL = 7.0048 +/- 0.07708
+04:07:11   evictions=27 runtime=381s
+04:07:11 
+04:07:11 ========== TASK 2: 7B @ 64K ==========
+04:07:11 >>> 7B 64K baseline (c=65536, budget=0) 
+04:15:14   Final estimate: PPL = 6.2531 +/- 0.04716
+04:15:14   evictions=0 runtime=483s
+04:15:14 >>> 7B 64K 90% (c=65536, budget=58982) 
+04:33:15   Final estimate: PPL = 6.3687 +/- 0.04834
+04:33:15   evictions=36 runtime=1081s
+04:33:15 >>> 7B 64K 85% (c=65536, budget=55706) 
+04:55:19   Final estimate: PPL = 6.4960 +/- 0.04971
+04:55:19   evictions=54 runtime=1324s
+04:55:19 
+04:55:19 ========== TASK 3: NIAH 7B @ 32K (strict checker) ==========
+04:55:19 >>> NIAH baseline start (c=32768, budget=0, needle@400)
+04:56:10   FAIL (runtime=51s)
+04:56:10   output: > EOF by user
+04:56:11 >>> NIAH baseline middle (c=32768, budget=0, needle@65000)
+04:57:02   FAIL (runtime=51s)
+04:57:02   output: > EOF by user
+04:57:03 >>> NIAH baseline end (c=32768, budget=0, needle@120000)
+04:57:55   FAIL (runtime=52s)
+04:57:55   output: > EOF by user
+04:57:55 >>> NIAH 90% start (c=32768, budget=29491, needle@400)
+04:59:06   FAIL (runtime=71s)
+04:59:06   output: > EOF by user
+04:59:06 >>> NIAH 90% middle (c=32768, budget=29491, needle@65000)
+05:00:17   FAIL (runtime=71s)
+05:00:17   output: > EOF by user
+05:00:17 >>> NIAH 90% end (c=32768, budget=29491, needle@120000)
+05:01:29   FAIL (runtime=72s)
+05:01:29   output: > EOF by user
+05:01:29 >>> NIAH 85% start (c=32768, budget=27853, needle@400)
+05:02:46   FAIL (runtime=77s)
+05:02:46   output: > EOF by user
+05:02:46 >>> NIAH 85% middle (c=32768, budget=27853, needle@65000)
+05:04:04   FAIL (runtime=78s)
+05:04:04   output: > EOF by user
+05:04:04 >>> NIAH 85% end (c=32768, budget=27853, needle@120000)
+05:05:22   FAIL (runtime=78s)
+05:05:22   output: > EOF by user
+05:05:22 
+05:05:22 ========== TASK 4: Full Stack @ 32K ==========
+05:05:22 >>> f16 KV baseline (c=32768, budget=0) 
+05:08:10   Final estimate: PPL = 6.8504 +/- 0.07496
+05:08:10   evictions=0 runtime=168s
+05:08:10 >>> TQ only (q8_0 + turbo3) (c=32768, budget=0) -ctk q8_0 -ctv turbo3
+05:11:29   Final estimate: PPL = 6.8879 +/- 0.07490
+05:11:29   evictions=0 runtime=199s
+05:11:29 >>> TriAtt 90% only (c=32768, budget=29491) 
+05:16:50   Final estimate: PPL = 6.9327 +/- 0.07614
+05:16:50   evictions=18 runtime=321s
+05:16:50 >>> TQ + TriAtt 90% (STACK) (c=32768, budget=29491) -ctk q8_0 -ctv turbo3
+05:22:39   Final estimate: PPL = 6.9710 +/- 0.07608
+05:22:39   evictions=18 runtime=349s
+============================================
+ALL FOLLOW-UP TESTS COMPLETE: Thu Apr  9 05:22:39 CDT 2026
+Results: /Users/tom/local_llms/llama.cpp/followup_results.txt
+============================================

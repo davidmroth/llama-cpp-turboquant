@@ -1,0 +1,35 @@
+============================================
+V3 Ablations — 7B @ 32K
+Started: Thu Apr  9 10:07:57 CDT 2026
+============================================
+10:07:57 
+10:07:57 ========== A) V3 @ 85% retention (prefix=256) ==========
+10:07:57 >>> PPL V3-85 prefix=256 (budget=27853, V3, prefix=256)
+10:14:24   Final estimate: PPL = 6.8833 +/- 0.07544
+10:14:24   evict_rounds=27 runtime=387s
+10:14:24 >>> NIAH V3-85 prefix=256 @400 (budget=27853, V3 prefix=256)
+10:15:44   PASS (runtime=80s, evictions=3)
+10:15:44   generated:  PURPLE ELEPHANT 7742 Given the following context, what is the question that can be asked? Answering questions about the history 
+10:15:44 >>> NIAH V3-85 prefix=256 @65000 (budget=27853, V3 prefix=256)
+10:17:04   PARTIAL_WORD (runtime=80s, evictions=3)
+10:17:04   generated:  PURPLE ELEPHANT 774 Please provide the name of the person who was the pioneer in television broadcasting in the given text material. The 
+10:17:04 >>> NIAH V3-85 prefix=256 @120000 (budget=27853, V3 prefix=256)
+10:18:23   PASS (runtime=79s, evictions=3)
+10:18:23   generated:  PURPLE ELEPHANT 7742 The secret code word mentioned earlier is "PURPLE ELEPHANT 7742." 
+10:18:23 
+10:18:23 ========== B) V3 @ 90% retention, prefix=128 ==========
+10:18:23 >>> PPL V3-90 prefix=128 (budget=29491, V3, prefix=128)
+10:23:51   Final estimate: PPL = 6.8713 +/- 0.07529
+10:23:51   evict_rounds=18 runtime=328s
+10:23:51 >>> NIAH V3-90 prefix=128 @400 (budget=29491, V3 prefix=128)
+10:25:04   PASS (runtime=73s, evictions=2)
+10:25:04   generated:  PURPLE ELEPHANT 7742 The secret code word mentioned earlier is "PURPLE ELEPHANT 7742." 
+10:25:04 >>> NIAH V3-90 prefix=128 @65000 (budget=29491, V3 prefix=128)
+10:26:17   PASS (runtime=73s, evictions=2)
+10:26:17   generated:  PURPLE ELEPHANT 7742. @.@ PURPLE ELEPHANT 7742. @.@ Given 
+10:26:17 >>> NIAH V3-90 prefix=128 @120000 (budget=29491, V3 prefix=128)
+10:27:29   PASS (runtime=72s, evictions=2)
+10:27:29   generated:  PURPLE ELEPHANT 7742 The secret code word mentioned earlier is "PURPLE ELEPHANT 7742." 
+============================================
+Done: Thu Apr  9 10:27:29 CDT 2026
+============================================

@@ -1,0 +1,30 @@
+============================================
+08:13:01 
+08:13:01 ========== Qwen3.5-27B @ 32K ==========
+08:13:01 >>> 27B baseline (c=32768, budget=0, chunks=3)
+08:20:57   Final estimate: PPL = 7.4640 +/- 0.09163
+08:20:57   evict_rounds=0 calibrations=0 runtime=476s
+
+08:20:57 >>> 27B 90% (c=32768, budget=29491, chunks=3)
+08:29:29   Final estimate: PPL = 7.5158 +/- 0.09234
+08:29:29   evict_rounds=18 calibrations=18 runtime=512s
+
+08:29:29 >>> 27B 85% (c=32768, budget=27853, chunks=3)
+08:38:13   Final estimate: PPL = 7.6131 +/- 0.09396
+08:38:13   evict_rounds=27 calibrations=27 runtime=524s
+
+08:38:13 
+08:38:13 ========== Qwen3.5-35B-A3B @ 32K ==========
+08:38:13 >>> 35B baseline (c=32768, budget=0, chunks=3)
+08:39:53   Final estimate: PPL = 6.2720 +/- 0.06864
+08:39:53   evict_rounds=0 calibrations=0 runtime=100s
+
+08:39:53 >>> 35B 90% (c=32768, budget=29491, chunks=3)
+08:41:45   Final estimate: PPL = 6.3062 +/- 0.06906
+08:41:45   evict_rounds=18 calibrations=18 runtime=112s
+
+08:41:45 >>> 35B 85% (c=32768, budget=27853, chunks=3)
+08:43:41   Final estimate: PPL = 6.3669 +/- 0.06992
+08:43:41   evict_rounds=27 calibrations=27 runtime=116s
+
+Done: Thu Apr  9 08:43:41 CDT 2026

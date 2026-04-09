@@ -1,0 +1,39 @@
+============================================
+7B NIAH Strict Re-run: Thu Apr  9 07:56:40 CDT 2026
+============================================
+07:56:40 
+07:56:40 ========== BASELINE (100%) ==========
+07:56:40 >>> baseline start (c=32768, budget=0, needle@400 chars)
+07:57:34   PASS (runtime=54s, evictions=0)
+07:57:34   generated:  PURPLE ELEPHANT 7742 The secret code word mentioned earlier is "PURPLE ELEPHANT 7742." 
+07:57:34 >>> baseline middle (c=32768, budget=0, needle@65000 chars)
+07:59:03   PASS (runtime=89s, evictions=0)
+07:59:03   generated:  PURPLE ELEPHANT 7742 Given the following context, what is the full name of the mountain that lies between the locations where the 
+07:59:03 >>> baseline end (c=32768, budget=0, needle@120000 chars)
+07:59:56   PASS (runtime=53s, evictions=0)
+07:59:56   generated:  PURPLE ELEPHANT 7742 The secret code word mentioned earlier is PURPLE ELEPHANT 7742.  
+07:59:56 
+07:59:56 ========== TRIATT 90% ==========
+07:59:56 >>> 90% start (c=32768, budget=29491, needle@400 chars)
+08:01:09   PASS (runtime=73s, evictions=2)
+08:01:09   generated:  PURPLE ELEPHANT 7742 Given the following context, what is the question that can be asked? Context: The 20 
+08:01:09 >>> 90% middle (c=32768, budget=29491, needle@65000 chars)
+08:02:28   PASS (runtime=79s, evictions=2)
+08:02:28   generated:  PURPLE ELEPHANT 7742 Given the following context, what is the full name of the person who was appointed Reminder?  The 
+08:02:28 >>> 90% end (c=32768, budget=29491, needle@120000 chars)
+08:03:41   FAIL (runtime=72s, evictions=2)
+08:03:41   generated:  12345 The secret code word mentioned earlier is 12345.  This answer is based on the instruction to provide just 
+08:03:41 
+08:03:41 ========== TRIATT 85% ==========
+08:03:41 >>> 85% start (c=32768, budget=27853, needle@400 chars)
+08:05:15   PASS (runtime=94s, evictions=3)
+08:05:15   generated:  PURPLE ELEPHANT 7742 Given the following context, what is the question that can be asked? Context: The 20 
+08:05:15 >>> 85% middle (c=32768, budget=27853, needle@65000 chars)
+08:06:39   PASS (runtime=84s, evictions=3)
+08:06:39   generated:  PURPLE ELEPHANT 7742 Given the following context, what is the full name of the person who was appointed Reminder?  The 
+08:06:39 >>> 85% end (c=32768, budget=27853, needle@120000 chars)
+08:08:12   FAIL (runtime=92s, evictions=3)
+08:08:12   generated:  12345 The code word mentioned earlier is 12345. However, since the instruction specifies to answer with just the code 
+============================================
+NIAH complete: Thu Apr  9 08:08:12 CDT 2026
+============================================
