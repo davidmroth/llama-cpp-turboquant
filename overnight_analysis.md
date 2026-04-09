@@ -215,6 +215,45 @@ heuristic, and the missing 3D Q tensor capture path.
 
 ---
 
+## V3 Hybrid Breakthrough
+
+**Setup**: `prefix_protect=256` (never evict first 256 tokens) + per-segment
+quota (K=8 position buckets in [256, window_threshold), evict proportionally
+from each) + recent window_size=128 at the end. TRIATT_HYBRID=2.
+
+**Results** on Qwen2.5-7B-Instruct-Q8_0, c=32768, b=512, --chunks 3:
+
+| Variant | Mechanism | PPL @ 90% | NIAH start | NIAH mid | NIAH end |
+|---------|-----------|-----------|------------|----------|----------|
+| baseline | none | 6.8504 | PASS | PASS | PASS |
+| V1 | global trig sort (paper-faithful) | 6.9327 (+1.20%) | PASS | PASS | **FAIL** |
+| V2 | per-segment quota only | 7.1577 (+4.49%) | **FAIL** | PASS | PASS |
+| **V3** | **prefix=256 + per-segment quota** | **6.8713 (+0.31%)** | **PASS** | **PASS** | **PASS** |
+
+V3 is the first hybrid that simultaneously:
+- costs less PPL than V1 (+0.31% vs +1.20%, ~4× improvement)
+- passes all three NIAH positions (start/middle/end)
+- uses the same eviction count (18 rounds) at the same budget
+
+**Mechanism hypothesis**: V1 was occasionally evicting high-value early-context
+tokens that got unlucky trig scores — those tokens carry most of the grammar
+and style load for autoregressive prediction, so losing any of them hurts
+disproportionately. V2 made this worse by *forcing* eviction across all buckets
+including the start bucket. V3 locks the first 256 tokens as non-evictable,
+which gives the per-segment quota cover to distribute eviction fairly across
+the middle-to-end bands without touching the grammar/style prior. The end
+needle survives because the per-segment quota prevents its bucket from being
+over-pruned.
+
+**Raw data**: `v3_validation_results.txt`.
+
+**Still TBD** (ablations in progress):
+1. V3 @ 85% retention — does the win hold at more aggressive savings?
+2. prefix=128 vs 256 at 90% — is there a tighter default?
+3. TQ + V3 90% full stack
+4. V3 on 27B / 35B-A3B hybrid models
+5. V3 at longer context (64K, 128K)
+
 ## Files
 
 - `run_overnight.sh`           — original (broken) overnight script. PPL extraction
@@ -228,4 +267,8 @@ heuristic, and the missing 3D Q tensor capture path.
                                   exact needle match in generated tokens only)
 - `niah_7b_strict_results.txt` — verified 7B NIAH results
 - `qwen35_validation.sh`       — 27B / 35B-A3B PPL validation at 32K
-- `qwen35_validation_results.txt` — qwen35 PPL data (in progress)
+- `qwen35_validation_results.txt` — verified qwen35 PPL data
+- `hybrid_validation.sh`       — V1 vs V2 ablation (PPL + NIAH)
+- `hybrid_validation_results.txt` — V1 vs V2 full comparison
+- `v3_validation.sh`           — V3 breakthrough run (PPL + NIAH at 90%)
+- `v3_validation_results.txt`  — V3 verified results

@@ -65,6 +65,23 @@ struct llama_triattention {
     float   ema_alpha              = 0.1f; // EMA blending factor (0.1 = stable, 0.5 = reactive)
     int32_t first_attn_layer       = -1;   // smallest attention-layer index ever observed (used to count tokens once per pass)
 
+    // Hybrid memory policy: per-segment quota + optional prefix protection.
+    //
+    // V2 (TRIATT_HYBRID=1): per-segment quota only.
+    //   Divide non-protected cells into n_segments buckets by position and
+    //   evict proportionally from each bucket. Rescues NIAH end-position but
+    //   breaks NIAH start-position (observed 2026-04-09).
+    //
+    // V3 (TRIATT_HYBRID=2): per-segment quota + prefix protection.
+    //   Always keep the first prefix_protect tokens (like the recent-window
+    //   protection, but at the start of context), then apply per-segment
+    //   quota to the cells between prefix and window. Designed to preserve
+    //   both ends of the context.
+    //
+    // Toggle via TRIATT_HYBRID env var (0=V1, 1=V2, 2=V3).
+    int32_t n_segments             = 8;     // number of position buckets
+    int32_t prefix_protect         = 256;   // keep first N tokens (V3 only). override via TRIATT_PREFIX env.
+
     // Initialize RoPE constants
     // n_rot: number of rotated dimensions (<= head_dim). Defaults to head_dim (full RoPE).
     void init_constants(float rope_theta, uint32_t head_dim, uint32_t n_heads, uint32_t n_kv_heads, uint32_t n_layers, uint32_t n_rot = 0);

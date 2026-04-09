@@ -475,26 +475,158 @@ int32_t llama_triattention::evict(llama_kv_cache * cache, ggml_type type_k) {
         }
     }
 
-    // Sort ascending by score. Evict from the END (highest scores are least important).
-    // Note: our trig formula produces high scores for unimportant tokens
-    // (the complex product Q*conj(K) measures orthogonality, not alignment).
-    std::sort(active_cells.begin(), active_cells.end(),
-        [](const cell_info & a, const cell_info & b) { return a.score < b.score; });
+    // ----- Eviction selection -----
+    // V1 (default, TRIATT_HYBRID=0): global sort by score, evict highest-score cells.
+    // V2 (TRIATT_HYBRID=1): per-segment quota only.
+    // V3 (TRIATT_HYBRID=2): per-segment quota + prefix protection (first N tokens).
+    static int hybrid_mode = -1;
+    if (hybrid_mode < 0) {
+        const char * env = getenv("TRIATT_HYBRID");
+        hybrid_mode = env ? atoi(env) : 0;
+        const char * p_env = getenv("TRIATT_PREFIX");
+        if (p_env) {
+            prefix_protect = atoi(p_env);
+        }
+        if (hybrid_mode == 1) {
+            LLAMA_LOG_INFO("%s: V2 hybrid policy enabled (per-segment quota, n_segments=%d)\n",
+                __func__, (int)n_segments);
+        } else if (hybrid_mode == 2) {
+            LLAMA_LOG_INFO("%s: V3 hybrid policy enabled (prefix_protect=%d + per-segment quota n_segments=%d)\n",
+                __func__, (int)prefix_protect, (int)n_segments);
+        }
+    }
 
     const int32_t n_to_evict = n_used - budget;
     int32_t n_evicted = 0;
 
-    // Evict from the END of the sorted array (highest scores = least important)
-    const int32_t n_cells = (int32_t)active_cells.size();
-    for (int32_t i = n_cells - 1; i >= 0 && n_evicted < n_to_evict; --i) {
-        const auto & cell = active_cells[i];
-        if (cell.pos >= window_threshold) continue; // skip protected
-        cache->seq_rm(0, cell.pos, cell.pos + 1);
-        ++n_evicted;
+    if (hybrid_mode == 0) {
+        // V1: global sort, evict highest-score cells.
+        // Sort ascending by score. Evict from the END (highest scores are least important).
+        // Note: our trig formula produces high scores for unimportant tokens
+        // (the complex product Q*conj(K) measures orthogonality, not alignment).
+        std::sort(active_cells.begin(), active_cells.end(),
+            [](const cell_info & a, const cell_info & b) { return a.score < b.score; });
+
+        const int32_t n_cells = (int32_t)active_cells.size();
+        for (int32_t i = n_cells - 1; i >= 0 && n_evicted < n_to_evict; --i) {
+            const auto & cell = active_cells[i];
+            if (cell.pos >= window_threshold) continue; // skip protected
+            cache->seq_rm(0, cell.pos, cell.pos + 1);
+            ++n_evicted;
+        }
+    } else {
+        // V2 / V3: per-segment quota (with optional V3 prefix protection).
+        //
+        // Partition non-protected cells into n_segments buckets by position
+        // (uniform splits over [prefix_lo, window_threshold)). For V3, cells
+        // with pos < prefix_protect are skipped entirely (never evicted).
+        //
+        // Compute a per-segment target proportional to that segment's
+        // eviction-eligible cell count so the *fraction* removed from each
+        // segment is roughly equal.
+        //
+        // Within each segment, sort by score and evict the highest-score cells
+        // up to the per-segment target. If a segment runs out (small segment,
+        // big quota), the deficit gets carried into a final global pass over
+        // remaining non-protected cells, again sorted by score.
+
+        const int32_t k = std::max(1, n_segments);
+        // V3: pos_lo = prefix_protect → skip the first N tokens entirely.
+        // V2: pos_lo = 0 → no prefix protection.
+        const llama_pos prefix_lo = (hybrid_mode == 2) ? (llama_pos)prefix_protect : 0;
+
+        std::vector<std::vector<cell_info>> buckets(k);
+        std::vector<cell_info> protected_or_window; // skipped from selection
+        protected_or_window.reserve(active_cells.size() / 8 + 16);
+
+        // window_threshold may be 0 or negative early on; clamp.
+        const llama_pos pos_hi = std::max<llama_pos>(window_threshold, prefix_lo + 1);
+        const float seg_width = (float)(pos_hi - prefix_lo) / (float)k;
+
+        for (auto & cell : active_cells) {
+            if (cell.pos >= window_threshold || cell.pos < prefix_lo) {
+                protected_or_window.push_back(cell);
+                continue;
+            }
+            int seg = (int)((float)(cell.pos - prefix_lo) / seg_width);
+            if (seg < 0) seg = 0;
+            if (seg >= k) seg = k - 1;
+            buckets[seg].push_back(cell);
+        }
+
+        // Total eligible cells across all buckets.
+        int32_t total_eligible = 0;
+        for (const auto & b : buckets) total_eligible += (int32_t)b.size();
+        if (total_eligible <= 0) {
+            LLAMA_LOG_INFO("%s: hybrid evict skipped — no eligible cells (n_used=%d, window=%d)\n",
+                __func__, n_used, (int)window_threshold);
+            return 0;
+        }
+
+        // Per-segment target (proportional to bucket size). Round-down per
+        // segment, carry the remainder into a final global cleanup pass.
+        const float target_frac = (float)n_to_evict / (float)total_eligible;
+
+        for (int s = 0; s < k; ++s) {
+            auto & bucket = buckets[s];
+            if (bucket.empty()) continue;
+
+            // Sort ascending by score; high scores at the end = least important.
+            std::sort(bucket.begin(), bucket.end(),
+                [](const cell_info & a, const cell_info & b) { return a.score < b.score; });
+
+            const int32_t bucket_target = (int32_t)((float)bucket.size() * target_frac);
+            const int32_t bucket_to_evict = std::min(bucket_target, (int32_t)bucket.size());
+
+            for (int32_t i = (int32_t)bucket.size() - 1, evicted_here = 0;
+                 i >= 0 && evicted_here < bucket_to_evict && n_evicted < n_to_evict;
+                 --i, ++evicted_here) {
+                const auto & cell = bucket[i];
+                cache->seq_rm(0, cell.pos, cell.pos + 1);
+                ++n_evicted;
+            }
+        }
+
+        // Final cleanup pass: if rounding left us short, walk a global ranking
+        // of all remaining cells (those NOT yet evicted) by score, evict highest
+        // until we hit n_to_evict.
+        if (n_evicted < n_to_evict) {
+            std::vector<cell_info> remaining;
+            remaining.reserve(total_eligible);
+            // The seq_rm calls above invalidate cells.is_empty() checks against
+            // the cache, but our cell_info copies still hold the old data —
+            // we just need to skip cells we already evicted. Track via a set.
+            // Simpler: re-scan the cache fresh and rebuild candidates.
+            const auto & cells2 = cache->get_cells(0);
+            const uint32_t kv_size2 = cache->get_size();
+            for (uint32_t i = 0; i < kv_size2; ++i) {
+                if (cells2.is_empty(i)) continue;
+                const llama_pos p = cells2.pos_get(i);
+                if (p >= window_threshold) continue;
+                if (p < prefix_lo) continue;
+                // Find original score (linear scan — small n in practice).
+                float sc = 0.0f;
+                for (const auto & c : active_cells) {
+                    if (c.pos == p) { sc = c.score; break; }
+                }
+                remaining.push_back({i, p, sc});
+            }
+            std::sort(remaining.begin(), remaining.end(),
+                [](const cell_info & a, const cell_info & b) { return a.score < b.score; });
+            for (int32_t i = (int32_t)remaining.size() - 1;
+                 i >= 0 && n_evicted < n_to_evict; --i) {
+                cache->seq_rm(0, remaining[i].pos, remaining[i].pos + 1);
+                ++n_evicted;
+            }
+        }
     }
 
-    LLAMA_LOG_INFO("%s: evicted %d/%d tokens (budget=%d, used=%d, max_pos=%d)\n",
-        __func__, n_evicted, n_used, budget, n_used - n_evicted, (int)max_pos);
+    const char * mode_str =
+        (hybrid_mode == 0) ? "v1" :
+        (hybrid_mode == 1) ? "v2" :
+        (hybrid_mode == 2) ? "v3" : "unknown";
+    LLAMA_LOG_INFO("%s: evicted %d/%d tokens (budget=%d, used=%d, max_pos=%d, mode=%s)\n",
+        __func__, n_evicted, n_used, budget, n_used - n_evicted, (int)max_pos, mode_str);
 
     return n_evicted;
 }

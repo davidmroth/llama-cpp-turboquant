@@ -1,0 +1,86 @@
+============================================
+08:50:28 
+08:50:28 ========== TASK 1: PPL @ 32K (3 chunks) ==========
+08:50:28 >>> PPL baseline 100% (budget=0, TRIATT_HYBRID=0)
+08:53:18   Final estimate: PPL = 6.8504 +/- 0.07496
+08:53:18   evict_rounds=0  runtime=170s
+
+08:53:18 >>> PPL V1 90% (budget=29491, TRIATT_HYBRID=0)
+08:58:40   Final estimate: PPL = 6.9327 +/- 0.07614
+08:58:40   evict_rounds=18 mode=v1 runtime=322s
+
+08:58:40 >>> PPL V2 hybrid 90% (budget=29491, TRIATT_HYBRID=1)
+09:04:02   Final estimate: PPL = 7.1577 +/- 0.07950
+09:04:02   evict_rounds=18 mode=hybrid runtime=322s
+
+09:04:02 >>> PPL V1 85% (budget=27853, TRIATT_HYBRID=0)
+09:10:23   Final estimate: PPL = 7.0048 +/- 0.07708
+09:10:23   evict_rounds=27 mode=v1 runtime=381s
+
+09:10:23 >>> PPL V2 hybrid 85% (budget=27853, TRIATT_HYBRID=1)
+09:16:48   Final estimate: PPL = 7.4244 +/- 0.08335
+09:16:48   evict_rounds=27 mode=hybrid runtime=385s
+
+09:16:48 
+09:16:48 ========== TASK 2: NIAH @ 32K (start/middle/end) ==========
+09:16:48 >>> NIAH baseline @400 (budget=0, TRIATT_HYBRID=0, needle@400 chars)
+09:17:40   PASS (runtime=52s, evictions=0)
+09:17:40   generated:  PURPLE ELEPHANT 7742 The secret code word mentioned earlier is "PURPLE ELEPHANT 7742." 
+
+09:17:41 >>> NIAH baseline @65000 (budget=0, TRIATT_HYBRID=0, needle@65000 chars)
+09:18:33   PASS (runtime=52s, evictions=0)
+09:18:33   generated:  PURPLE ELEPHANT 7742 Given the following context, what is the full name of the mountain that lies between the locations where the 
+
+09:18:34 >>> NIAH baseline @120000 (budget=0, TRIATT_HYBRID=0, needle@120000 chars)
+09:19:26   PASS (runtime=52s, evictions=0)
+09:19:27   generated:  PURPLE ELEPHANT 7742 The secret code word mentioned earlier is PURPLE ELEPHANT 7742.  
+
+09:19:27 >>> NIAH V1 90% @400 (budget=29491, TRIATT_HYBRID=0, needle@400 chars)
+09:20:39   PASS (runtime=72s, evictions=2)
+09:20:39   generated:  PURPLE ELEPHANT 7742 Given the following context, what is the question that can be asked? Context: The 20 
+
+09:20:39 >>> NIAH V1 90% @65000 (budget=29491, TRIATT_HYBRID=0, needle@65000 chars)
+09:21:52   PASS (runtime=73s, evictions=2)
+09:21:52   generated:  PURPLE ELEPHANT 7742 Given the following context, what is the full name of the person who was appointed Reminder?  The 
+
+09:21:52 >>> NIAH V1 90% @120000 (budget=29491, TRIATT_HYBRID=0, needle@120000 chars)
+09:23:05   FAIL (runtime=73s, evictions=2)
+09:23:05   generated:  12345 The secret code word mentioned earlier is 12345.  This answer is based on the instruction to provide just 
+
+09:23:05 >>> NIAH V2 hybrid 90% @400 (budget=29491, TRIATT_HYBRID=1, needle@400 chars)
+09:24:18   FAIL (runtime=73s, evictions=2)
+09:24:18   generated:  1234567890123456789012345678901 
+
+09:24:18 >>> NIAH V2 hybrid 90% @65000 (budget=29491, TRIATT_HYBRID=1, needle@65000 chars)
+09:25:29   PASS (runtime=71s, evictions=2)
+09:25:29   generated:  PURPLE ELEPHANT 7742. @.@ 1 miles ( 2 @.@ 4 km ) road on Eleuthera was 
+
+09:25:29 >>> NIAH V2 hybrid 90% @120000 (budget=29491, TRIATT_HYBRID=1, needle@120000 chars)
+09:26:41   PASS (runtime=72s, evictions=2)
+09:26:41   generated:  PURPLE ELEPHANT 7742.   = = = = = = = = = = = = = = = = = = = 
+
+09:26:41 >>> NIAH V1 85% @400 (budget=27853, TRIATT_HYBRID=0, needle@400 chars)
+09:27:59   PASS (runtime=78s, evictions=3)
+09:27:59   generated:  PURPLE ELEPHANT 7742 Given the following context, what is the question that can be asked? Context: The 20 
+
+09:27:59 >>> NIAH V1 85% @65000 (budget=27853, TRIATT_HYBRID=0, needle@65000 chars)
+09:29:17   PASS (runtime=78s, evictions=3)
+09:29:17   generated:  PURPLE ELEPHANT 7742 Given the following context, what is the full name of the person who was appointed Reminder?  The 
+
+09:29:17 >>> NIAH V1 85% @120000 (budget=27853, TRIATT_HYBRID=0, needle@120000 chars)
+09:30:35   FAIL (runtime=78s, evictions=3)
+09:30:35   generated:  12345 The code word mentioned earlier is 12345. However, since the instruction specifies to answer with just the code 
+
+09:30:35 >>> NIAH V2 hybrid 85% @400 (budget=27853, TRIATT_HYBRID=1, needle@400 chars)
+09:31:53   FAIL (runtime=78s, evictions=3)
+09:31:53   generated:  1234567890123456789012345678901 
+
+09:31:53 >>> NIAH V2 hybrid 85% @65000 (budget=27853, TRIATT_HYBRID=1, needle@65000 chars)
+09:33:14   PARTIAL_WORD (runtime=81s, evictions=3)
+09:33:14   generated:  PURPLE ELEPHANT 774 @= Robert Boulter = Robert Boulter is an English film, television and radio actor. He 
+
+09:33:14 >>> NIAH V2 hybrid 85% @120000 (budget=27853, TRIATT_HYBRID=1, needle@120000 chars)
+09:34:32   PASS (runtime=78s, evictions=3)
+09:34:32   generated:  PURPLE ELEPHANT 7742  = = = US 2nd Division counterattack = = =     At 13 :  
+
+Done: Thu Apr  9 09:34:32 CDT 2026

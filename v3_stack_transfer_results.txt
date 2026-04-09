@@ -1,0 +1,34 @@
+============================================
+10:29:31 
+10:29:31 ========== 1) TQ + V3 90% full stack (7B @ 32K) ==========
+10:29:31 >>> 7B TQ only (reference) (budget=0, hybrid=0, prefix=256, extra=-ctk q8_0 -ctv turbo3)
+10:32:51   Final estimate: PPL = 6.8879 +/- 0.07490
+10:32:51   evict_rounds=0 runtime=200s
+
+10:32:51 >>> 7B V3 90% only (reference) (budget=29491, hybrid=2, prefix=128, extra=)
+10:38:14   Final estimate: PPL = 6.8713 +/- 0.07529
+10:38:14   evict_rounds=18 runtime=323s
+
+10:38:14 >>> 7B TQ + V3 90% STACK (budget=29491, hybrid=2, prefix=128, extra=-ctk q8_0 -ctv turbo3)
+10:44:09   Final estimate: PPL = 6.9075 +/- 0.07519
+10:44:09   evict_rounds=18 runtime=355s
+
+10:44:09 
+10:44:09 ========== 2) V3 @ 90% transfer to qwen35 hybrid models ==========
+10:44:09 >>> 27B V1 90% (reference) (budget=29491, hybrid=0, prefix=128, extra=)
+10:52:38   Final estimate: PPL = 7.5158 +/- 0.09234
+10:52:38   evict_rounds=18 runtime=509s
+
+10:52:38 >>> 27B V3 90% (budget=29491, hybrid=2, prefix=128, extra=)
+11:01:09   Final estimate: PPL = 7.4718 +/- 0.09170
+11:01:09   evict_rounds=18 runtime=511s
+
+11:01:09 >>> 35B V1 90% (reference) (budget=29491, hybrid=0, prefix=128, extra=)
+11:03:05   Final estimate: PPL = 6.3062 +/- 0.06906
+11:03:05   evict_rounds=18 runtime=116s
+
+11:03:05 >>> 35B V3 90% (budget=29491, hybrid=2, prefix=128, extra=)
+11:05:00   Final estimate: PPL = 6.2778 +/- 0.06871
+11:05:00   evict_rounds=18 runtime=115s
+
+Done: Thu Apr  9 11:05:00 CDT 2026
