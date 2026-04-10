@@ -84,6 +84,34 @@ docker build -t local/llama.cpp:light-cuda --target light -f .devops/cuda.Docker
 docker build -t local/llama.cpp:server-cuda --target server -f .devops/cuda.Dockerfile .
 ```
 
+## Developer Build Container
+
+If you want a simple Linux container for local CMake work, this repository also includes a root-level `Dockerfile` with the CPU toolchain and build dependencies installed. It is intended for mounting your checkout and running builds, tests, and benchmarks interactively.
+
+Build the image:
+
+```bash
+docker build -t local/llama.cpp:dev .
+```
+
+Start a shell with the repository mounted in the container:
+
+```bash
+docker run --rm -it \
+	-v "$(pwd)":/workspace \
+	-v llama-cpp-ccache:/ccache \
+	local/llama.cpp:dev
+```
+
+Inside the container you can configure, build, test, and benchmark with ordinary Linux CMake commands:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLAMA_BUILD_TESTS=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+./build/bin/llama-bench --help
+```
+
 You may want to pass in some different `ARGS`, depending on the CUDA environment supported by your container host, as well as the GPU architecture.
 
 The defaults are:

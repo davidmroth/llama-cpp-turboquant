@@ -192,6 +192,14 @@ extern "C" {
 
     LLAMA_API const char * llama_flash_attn_type_name(enum llama_flash_attn_type flash_attn_type);
 
+    enum llama_prefill_attn_type {
+        LLAMA_PREFILL_ATTN_TYPE_AUTO  = -1,
+        LLAMA_PREFILL_ATTN_TYPE_DENSE = 0,
+        LLAMA_PREFILL_ATTN_TYPE_HISA  = 1,
+    };
+
+    LLAMA_API const char * llama_prefill_attn_type_name(enum llama_prefill_attn_type prefill_attn_type);
+
     enum llama_split_mode {
         LLAMA_SPLIT_MODE_NONE  = 0, // single GPU
         LLAMA_SPLIT_MODE_LAYER = 1, // split layers and KV across GPUs
@@ -340,6 +348,14 @@ extern "C" {
         enum llama_pooling_type      pooling_type;      // whether to pool (sum) embedding results by sequence id
         enum llama_attention_type    attention_type;    // attention type to use for embeddings
         enum llama_flash_attn_type   flash_attn_type;   // when to enable Flash Attention
+        enum llama_prefill_attn_type prefill_attn_type; // long-prefill attention strategy
+
+        uint32_t hisa_top_k;         // HISA: tokens to retain per query during sparse prefill
+        uint32_t hisa_block_size;    // HISA: tokens per coarse scoring block
+        uint32_t hisa_top_m_blocks;  // HISA: number of blocks retained after coarse scoring
+        uint32_t hisa_min_seq_len;   // HISA: minimum prefill length before sparse mode activates
+        uint32_t hisa_local_window;  // HISA: dense local tail retained for each query
+        float    hisa_reuse_ratio;   // HISA: previous-layer block reuse ratio during prefill
 
         // ref: https://github.com/ggml-org/llama.cpp/pull/2054
         float    rope_freq_base;   // RoPE base frequency, 0 = from model

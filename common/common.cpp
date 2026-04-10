@@ -1475,6 +1475,13 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.pooling_type      = params.pooling_type;
     cparams.attention_type    = params.attention_type;
     cparams.flash_attn_type   = params.flash_attn_type;
+    cparams.prefill_attn_type = params.prefill_attn_type;
+    cparams.hisa_top_k        = params.hisa_top_k;
+    cparams.hisa_block_size   = params.hisa_block_size;
+    cparams.hisa_top_m_blocks = params.hisa_top_m_blocks;
+    cparams.hisa_min_seq_len  = params.hisa_min_seq_len;
+    cparams.hisa_local_window = params.hisa_local_window;
+    cparams.hisa_reuse_ratio  = params.hisa_reuse_ratio;
     cparams.cb_eval           = params.cb_eval;
     cparams.cb_eval_user_data = params.cb_eval_user_data;
     cparams.offload_kqv       = !params.no_kv_offload;

@@ -1352,6 +1352,63 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                                    string_format("error: unknown value for --flash-attn: '%s'\n", value.c_str()));
                            }
                        }).set_env("LLAMA_ARG_FLASH_ATTN"));
+    add_opt(common_arg({ "--prefill-attn" }, "[auto|dense|hisa]",
+                       string_format("set long-prefill attention strategy ('auto', 'dense', or 'hisa', default: '%s')",
+                                     llama_prefill_attn_type_name(params.prefill_attn_type)),
+                       [](common_params & params, const std::string & value) {
+                           if (value == "auto") {
+                               params.prefill_attn_type = LLAMA_PREFILL_ATTN_TYPE_AUTO;
+                           } else if (value == "dense") {
+                               params.prefill_attn_type = LLAMA_PREFILL_ATTN_TYPE_DENSE;
+                           } else if (value == "hisa") {
+                               params.prefill_attn_type = LLAMA_PREFILL_ATTN_TYPE_HISA;
+                           } else {
+                               throw std::runtime_error(
+                                   string_format("error: unknown value for --prefill-attn: '%s'\n", value.c_str()));
+                           }
+                       }).set_env("LLAMA_ARG_PREFILL_ATTN"));
+    add_opt(common_arg(
+        {"--hisa-top-k"}, "N",
+        string_format("HISA: tokens retained per query during sparse prefill (default: %u)", params.hisa_top_k),
+        [](common_params & params, int value) {
+            params.hisa_top_k = value;
+        }
+    ).set_env("LLAMA_ARG_HISA_TOP_K"));
+    add_opt(common_arg(
+        {"--hisa-block-size"}, "N",
+        string_format("HISA: coarse scoring block size in tokens (default: %u)", params.hisa_block_size),
+        [](common_params & params, int value) {
+            params.hisa_block_size = value;
+        }
+    ).set_env("LLAMA_ARG_HISA_BLOCK_SIZE"));
+    add_opt(common_arg(
+        {"--hisa-top-m-blocks"}, "N",
+        string_format("HISA: number of coarse blocks retained per layer (default: %u)", params.hisa_top_m_blocks),
+        [](common_params & params, int value) {
+            params.hisa_top_m_blocks = value;
+        }
+    ).set_env("LLAMA_ARG_HISA_TOP_M_BLOCKS"));
+    add_opt(common_arg(
+        {"--hisa-min-seq-len"}, "N",
+        string_format("HISA: minimum prefill sequence length before sparse mode activates (default: %u)", params.hisa_min_seq_len),
+        [](common_params & params, int value) {
+            params.hisa_min_seq_len = value;
+        }
+    ).set_env("LLAMA_ARG_HISA_MIN_SEQ_LEN"));
+    add_opt(common_arg(
+        {"--hisa-local-window"}, "N",
+        string_format("HISA: dense local tail retained during sparse prefill (default: %u)", params.hisa_local_window),
+        [](common_params & params, int value) {
+            params.hisa_local_window = value;
+        }
+    ).set_env("LLAMA_ARG_HISA_LOCAL_WINDOW"));
+    add_opt(common_arg(
+        {"--hisa-reuse-ratio"}, "N",
+        string_format("HISA: previous-layer block reuse ratio during sparse prefill (default: %.2f)", (double) params.hisa_reuse_ratio),
+        [](common_params & params, const std::string & value) {
+            params.hisa_reuse_ratio = std::stof(value);
+        }
+    ).set_env("LLAMA_ARG_HISA_REUSE_RATIO"));
     add_opt(common_arg(
         {"-p", "--prompt"}, "PROMPT",
         "prompt to start generation with; for system message, use -sys",

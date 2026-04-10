@@ -621,8 +621,16 @@ struct llm_graph_params {
         }
 
         return
+            cparams.flash_attn == other.cparams.flash_attn &&
             cparams.embeddings  == other.cparams.embeddings  &&
             cparams.causal_attn == other.cparams.causal_attn &&
+            cparams.prefill_attn_type == other.cparams.prefill_attn_type &&
+            cparams.hisa_top_k == other.cparams.hisa_top_k &&
+            cparams.hisa_block_size == other.cparams.hisa_block_size &&
+            cparams.hisa_top_m_blocks == other.cparams.hisa_top_m_blocks &&
+            cparams.hisa_min_seq_len == other.cparams.hisa_min_seq_len &&
+            cparams.hisa_local_window == other.cparams.hisa_local_window &&
+            cparams.hisa_reuse_ratio == other.cparams.hisa_reuse_ratio &&
             arch  == other.arch  &&
             gtype == other.gtype &&
             cvec  == other.cvec  &&
