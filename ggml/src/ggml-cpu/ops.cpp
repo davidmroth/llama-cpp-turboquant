@@ -13,7 +13,7 @@
 #include <cmath>
 
 extern "C" {
-GGML_API int turbo3_cpu_wht_group_size;
+void ggml_turbo_set_cpu_wht_group_size(int group_size);
 }
 
 // ggml_compute_forward_dup
@@ -680,6 +680,9 @@ void ggml_compute_forward_add(
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
+        case GGML_TYPE_TURBO3_0:
+        case GGML_TYPE_TURBO4_0:
+        case GGML_TYPE_TURBO2_0:
         case GGML_TYPE_TQ1_0:
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TQ3_1S:
@@ -1132,6 +1135,9 @@ void ggml_compute_forward_add1(
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
+        case GGML_TYPE_TURBO3_0:
+        case GGML_TYPE_TURBO4_0:
+        case GGML_TYPE_TURBO2_0:
         case GGML_TYPE_TQ1_0:
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TQ3_1S:
@@ -1263,6 +1269,9 @@ void ggml_compute_forward_acc(
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
+        case GGML_TYPE_TURBO3_0:
+        case GGML_TYPE_TURBO4_0:
+        case GGML_TYPE_TURBO2_0:
         case GGML_TYPE_TQ1_0:
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TQ3_1S:
@@ -4353,6 +4362,9 @@ void ggml_compute_forward_out_prod(
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
+        case GGML_TYPE_TURBO3_0:
+        case GGML_TYPE_TURBO4_0:
+        case GGML_TYPE_TURBO2_0:
         case GGML_TYPE_TQ1_0:
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TQ3_1S:
@@ -4631,6 +4643,9 @@ void ggml_compute_forward_set(
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
+        case GGML_TYPE_TURBO3_0:
+        case GGML_TYPE_TURBO4_0:
+        case GGML_TYPE_TURBO2_0:
         case GGML_TYPE_TQ1_0:
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TQ3_1S:
@@ -4856,6 +4871,9 @@ void ggml_compute_forward_get_rows(
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
+        case GGML_TYPE_TURBO3_0:
+        case GGML_TYPE_TURBO4_0:
+        case GGML_TYPE_TURBO2_0:
         case GGML_TYPE_TQ1_0:
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TQ3_1S:
@@ -4946,7 +4964,7 @@ static void ggml_compute_forward_set_rows_f32(
     if (dst->type == GGML_TYPE_TURBO3_0 || dst->type == GGML_TYPE_TURBO4_0 || dst->type == GGML_TYPE_TURBO2_0) {
         int gs = 0;
         memcpy(&gs, dst->op_params, sizeof(int));
-        turbo3_cpu_wht_group_size = (gs == 64 || gs == 128) ? gs : 0;
+        ggml_turbo_set_cpu_wht_group_size((gs == (int) ggml_blck_size(dst->type)) ? gs : 0);
     }
 
     for (int64_t i03 = 0; i03 < ne03; ++i03) {
@@ -5590,6 +5608,9 @@ void ggml_compute_forward_clamp(
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
+        case GGML_TYPE_TURBO3_0:
+        case GGML_TYPE_TURBO4_0:
+        case GGML_TYPE_TURBO2_0:
         case GGML_TYPE_TQ1_0:
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_TQ3_1S:

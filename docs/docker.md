@@ -76,6 +76,13 @@ In the above examples, `--entrypoint /app/llama-cli` is specified for clarity, b
 
 Assuming one has the [nvidia-container-toolkit](https://github.com/NVIDIA/nvidia-container-toolkit) properly installed on Linux, or is using a GPU enabled cloud, `cuBLAS` should be accessible inside the container.
 
+If the current host does not expose an NVIDIA GPU to Docker, there are two different things you can validate:
+
+1. A compile-only CUDA build, which checks nvcc compilation, template instantiation, and linkability.
+2. Real CUDA runtime tests, which still require a Linux host with an NVIDIA driver, the NVIDIA container runtime, and accessible GPU hardware.
+
+On macOS hosts, Docker Desktop does not provide CUDA device passthrough, so only the first category is possible locally.
+
 ## Building Docker locally
 
 ```bash
@@ -83,6 +90,36 @@ docker build -t local/llama.cpp:full-cuda --target full -f .devops/cuda.Dockerfi
 docker build -t local/llama.cpp:light-cuda --target light -f .devops/cuda.Dockerfile .
 docker build -t local/llama.cpp:server-cuda --target server -f .devops/cuda.Dockerfile .
 ```
+
+## Compile-only CUDA validation without local GPU hardware
+
+If you want to validate that CUDA code still builds on a machine without a visible NVIDIA GPU, use the CI helper in build-only mode and specify the architectures explicitly:
+
+```bash
+mkdir -p tmp/results tmp/mnt
+GG_BUILD_CUDA=1 \
+GG_BUILD_ONLY=1 \
+GG_BUILD_CUDA_ARCHITECTURES="75;80;86;89" \
+bash ./ci/run.sh ./tmp/results ./tmp/mnt
+```
+
+This does not execute CUDA kernels. It is only a compile/link check.
+
+## Full CUDA runtime validation on a remote GPU host
+
+To run the same validation workflow with real CUDA execution, point your build or CI job at a Linux GPU machine and run it there. One practical option is a remote Docker context over SSH for image builds, paired with a self-hosted runner or SSH session for the actual `ci/run.sh` invocation:
+
+```bash
+docker context create gpu-box --docker "host=ssh://user@gpu-host"
+
+docker --context gpu-box build \
+	-t local/llama.cpp:full-cuda \
+	--target full \
+	-f .devops/cuda.Dockerfile \
+	.
+```
+
+Then run `GG_BUILD_CUDA=1 bash ./ci/run.sh ./tmp/results ./tmp/mnt` on that Linux GPU host, either through a self-hosted CI runner or an interactive SSH session. The important part is that actual test execution happens on Linux with NVIDIA driver/device access.
 
 ## Developer Build Container
 

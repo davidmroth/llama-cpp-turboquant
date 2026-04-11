@@ -20,8 +20,23 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-/* Global: WHT group size for CPU quantize path (set by CPU SET_ROWS handler) */
-GGML_API int turbo3_cpu_wht_group_size = 0;
+/* Shared CPU quantize state, set by the CPU SET_ROWS handler before quantization. */
+static int turbo3_cpu_wht_group_size = 0;
+
+GGML_API void ggml_turbo_set_cpu_wht_group_size(int group_size) {
+    turbo3_cpu_wht_group_size = group_size;
+}
+
+static int turbo_cpu_resolve_group_size(int64_t k, int block_size) {
+    int group_size = turbo3_cpu_wht_group_size;
+
+    if (group_size != block_size) {
+        group_size = block_size;
+    }
+
+    assert(k % group_size == 0);
+    return group_size;
+}
 
 /* ---------- constants ---------- */
 
@@ -236,20 +251,32 @@ static void turbo_cpu_fwht(float * x, int group_size) {
     for (int i = 0; i < group_size; i++) x[i] *= inv_sqrt * s2[i];
 }
 
+static void turbo_cpu_iwht(float * x, int group_size) {
+    const float * s1 = turbo_cpu_s1;
+    const float * s2 = turbo_cpu_s2;
+    const float inv_sqrt = (group_size == 128) ? 0.08838834764831845f : 0.125f;
+
+    for (int i = 0; i < group_size; i++) x[i] *= s2[i];
+
+    for (int h = 1; h < group_size; h *= 2) {
+        for (int i = 0; i < group_size; i += h * 2) {
+            for (int j = i; j < i + h; j++) {
+                float a = x[j], b = x[j + h];
+                x[j]     = a + b;
+                x[j + h] = a - b;
+            }
+        }
+    }
+
+    for (int i = 0; i < group_size; i++) x[i] *= inv_sqrt * s1[i];
+}
+
 /* ---------- TURBO3_0: 3-bit PolarQuant with WHT rotation ---------- */
 
 void quantize_row_turbo3_0_ref(const float * GGML_RESTRICT x, block_turbo3_0 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TURBO3 == 0);
 
-    // Read WHT group size from global (set by CPU SET_ROWS handler before each call).
-    // Fallback: 128 if row is 128-aligned, else 64.
-    extern int turbo3_cpu_wht_group_size;
-    int group_size = turbo3_cpu_wht_group_size;
-    if (group_size != 64 && group_size != 128) {
-        group_size = (k % 128 == 0) ? 128 : 64;
-    }
-    if (k % group_size != 0) group_size = (group_size == 128) ? 64 : 128;
-    assert(k % group_size == 0);
+    const int group_size = turbo_cpu_resolve_group_size(k, QK_TURBO3);
 
     const int n_groups = k / group_size;
     const int blocks_per_group = group_size / QK_TURBO3;
@@ -303,17 +330,19 @@ void quantize_row_turbo3_0_ref(const float * GGML_RESTRICT x, block_turbo3_0 * G
 }
 
 void dequantize_row_turbo3_0(const block_turbo3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
-    // Stub — Metal shader handles dequant on GPU.
     assert(k % QK_TURBO3 == 0);
     const int nb = k / QK_TURBO3;
     for (int block = 0; block < nb; block++) {
+        float buf[QK_TURBO3];
         float norm = GGML_FP16_TO_FP32(x[block].norm);
         for (int j = 0; j < QK_TURBO3; j++) {
             uint8_t low2 = (x[block].qs[j/4] >> ((j%4)*2)) & 0x3;
             uint8_t hi1 = (x[block].signs[j/8] >> (j%8)) & 0x1;
             uint8_t idx = low2 | (hi1 << 2);
-            y[block * QK_TURBO3 + j] = CENTROIDS_3BIT[idx] * norm;
+            buf[j] = CENTROIDS_3BIT[idx] * norm;
         }
+        turbo_cpu_iwht(buf, QK_TURBO3);
+        memcpy(y + block * QK_TURBO3, buf, sizeof(buf));
     }
 }
 
@@ -338,13 +367,7 @@ size_t quantize_turbo3_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT d
 void quantize_row_turbo2_0_ref(const float * GGML_RESTRICT x, block_turbo2_0 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TURBO2 == 0);
 
-    extern int turbo3_cpu_wht_group_size;
-    int group_size = turbo3_cpu_wht_group_size;
-    if (group_size != 64 && group_size != 128) {
-        group_size = (k % 128 == 0) ? 128 : 64;
-    }
-    if (k % group_size != 0) group_size = (group_size == 128) ? 64 : 128;
-    assert(k % group_size == 0);
+    const int group_size = turbo_cpu_resolve_group_size(k, QK_TURBO2);
 
     const int n_groups = k / group_size;
     const int blocks_per_group = group_size / QK_TURBO2;
@@ -397,11 +420,14 @@ void dequantize_row_turbo2_0(const block_turbo2_0 * GGML_RESTRICT x, float * GGM
     assert(k % QK_TURBO2 == 0);
     const int nb = k / QK_TURBO2;
     for (int block = 0; block < nb; block++) {
+        float buf[QK_TURBO2];
         float norm = GGML_FP16_TO_FP32(x[block].norm);
         for (int j = 0; j < QK_TURBO2; j++) {
             uint8_t idx = (x[block].qs[j/4] >> ((j%4)*2)) & 0x3;
-            y[block * QK_TURBO2 + j] = CENTROIDS_2BIT[idx] * norm;
+            buf[j] = CENTROIDS_2BIT[idx] * norm;
         }
+        turbo_cpu_iwht(buf, QK_TURBO2);
+        memcpy(y + block * QK_TURBO2, buf, sizeof(buf));
     }
 }
 
@@ -553,14 +579,13 @@ void dequantize_row_turbo4_0(const block_turbo4_0 * GGML_RESTRICT x, float * GGM
     for (int block = 0; block < nb; block++) {
         float norm = GGML_FP16_TO_FP32(x[block].norm);
         float * dst = y + block * d;
+        float buf[TURBO_D];
         for (int i = 0; i < d; i++) {
             uint8_t idx = (x[block].qs[i / 2] >> ((i % 2) * 4)) & 0xF;
-            dst[i] = CENTROIDS_4BIT[idx] * norm;
+            buf[i] = CENTROIDS_4BIT[idx] * norm;
         }
-        /* No inverse WHT, dequant stays in the rotated domain.
-        * Q is WHT-rotated by the graph, so <Q_rot, K_rot> gives correct attention scores.
-        * The inverse WHT is applied to the attention output via GGML_OP_TURBO_WHT (direction=1) in the graph. 
-        */
+        turbo_cpu_iwht(buf, d);
+        memcpy(dst, buf, sizeof(buf));
     }
 #else
     /* Legacy 3-bit + QJL dequant */
