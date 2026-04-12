@@ -1,0 +1,5 @@
+run_id,timestamp,model,backend,attn_requested,attn_observed,cache_k_requested,cache_k_observed,cache_v_requested,cache_v_observed,ctx_len,prompt_tokens,gen_tokens,prompt_time_ms,generation_time_ms,prompt_tps,generation_tps,kv_mem_mib,status,deterministic_group,output_hash,notes
+run-0001,2026-04-12T12:00:00Z,qwen3.5-35b-a3b-ud-q3_k_xl,cuda,dense,dense,f16,f16,f16,f16,8192,8192,256,3000,2100,2730,120,12000,ok,det-dense-8k,hash-abc123,"baseline dense f16/f16"
+run-0002,2026-04-12T12:02:00Z,qwen3.5-35b-a3b-ud-q3_k_xl,cuda,dense,dense,q8_0,q8_0,turbo4,turbo4,8192,8192,256,3050,2200,2690,115,8200,ok,det-dense-turbo-8k,hash-def456,"dense with turboquant"
+run-0003,2026-04-12T12:04:00Z,qwen3.5-35b-a3b-ud-q3_k_xl,cuda,hisa,hisa,f16,f16,f16,f16,65536,65536,256,21000,2400,3120,110,91000,ok,det-hisa-64k,hash-ghi789,"hisa baseline"
+run-0004,2026-04-12T12:06:00Z,qwen3.5-35b-a3b-ud-q3_k_xl,cuda,hisa,hisa,q8_0,q8_0,turbo4,turbo4,65536,65536,256,20500,2500,3200,105,61000,ok,det-hisa-turbo-64k,hash-jkl012,"hisa plus turboquant"
