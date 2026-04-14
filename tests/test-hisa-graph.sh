@@ -16,13 +16,14 @@ rm -f "$output_file"
 "$export_graph_ops" \
     -m "$model" \
     -c 4096 \
+    -b 4096 \
     -ub 4096 \
     --prefill-attn hisa \
     --hisa-top-k 256 \
     --hisa-block-size 128 \
     --hisa-top-m-blocks 8 \
     --hisa-min-seq-len 2048 \
-    --hisa-local-window 1024 \
+    --hisa-local-window 512 \
     --hisa-reuse-ratio 0.75 \
     -o "$output_file" \
     >/dev/null
