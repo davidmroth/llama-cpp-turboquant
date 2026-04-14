@@ -82,8 +82,8 @@ struct test_object {
     }
 
     bool operator<(const test_object &b) const {
-        return std::tie(op, type, ne, op_params, sources) <
-               std::tie(b.op, b.type, b.ne, b.op_params, b.sources);
+        return std::tie(op, type, ne, op_params, sources, name) <
+               std::tie(b.op, b.type, b.ne, b.op_params, b.sources, b.name);
     }
 };
 
