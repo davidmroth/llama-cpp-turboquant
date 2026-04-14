@@ -2039,7 +2039,6 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
                 ggml_tensor * top_blocks = ggml_argsort_top_k(ctx0, block_scores, (int) top_m_eff);
                 cb(top_blocks, "hisa_top_blocks", il);
-
                 ggml_tensor * block_bases = ggml_scale(ctx0, ggml_cast(ctx0, top_blocks, GGML_TYPE_F32), (float) cparams.hisa_block_size);
                 block_bases = ggml_reshape_4d(ctx0, block_bases, 1, top_m_eff, 1, n_stream);
                 block_bases = ggml_repeat_4d(ctx0, block_bases, cparams.hisa_block_size, top_m_eff, 1, n_stream);
