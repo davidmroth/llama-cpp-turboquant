@@ -297,3 +297,14 @@ if (TARGET gguf-model-data)
     target_link_libraries(export-graph-ops PRIVATE gguf-model-data)
     target_compile_definitions(export-graph-ops PRIVATE LLAMA_HF_FETCH)
 endif()
+
+if (NOT WIN32)
+    llama_test_cmd(
+        ${CMAKE_CURRENT_SOURCE_DIR}/test-hisa-graph.sh
+        NAME test-hisa-graph-smoke
+        LABEL model
+        WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
+        ARGS $<TARGET_FILE:export-graph-ops> "${MODEL_DEST}" "${CMAKE_CURRENT_BINARY_DIR}/hisa-graph-smoke.txt"
+    )
+    set_tests_properties(test-hisa-graph-smoke PROPERTIES FIXTURES_REQUIRED test-download-model)
+endif()

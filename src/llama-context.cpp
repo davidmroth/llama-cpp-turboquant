@@ -237,7 +237,6 @@ llama_context::llama_context(
         LLAMA_LOG_INFO("%s: hisa_min_seq   = %u\n",   __func__, cparams.hisa_min_seq_len);
         LLAMA_LOG_INFO("%s: hisa_local_win = %u\n",   __func__, cparams.hisa_local_window);
         LLAMA_LOG_INFO("%s: hisa_reuse     = %.3f\n", __func__, cparams.hisa_reuse_ratio);
-        LLAMA_LOG_WARN("%s: HISA prefill mode currently uses graph-native sparse block selection plus dense local suffix; cross-layer block reuse is not wired yet\n", __func__);
     }
 
     if (cparams.n_ctx_seq < hparams.n_ctx_train) {

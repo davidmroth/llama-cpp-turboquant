@@ -934,7 +934,8 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     cb_func          (params.cb),
     res              (params.res),
     ctx0             (res->get_ctx()),
-    gf               (res->get_gf()) {
+    gf               (res->get_gf()),
+    hisa_top_blocks_by_layer(n_layer, nullptr) {
         res->set_params(params);
     }
 
@@ -2037,8 +2038,57 @@ ggml_tensor * llm_graph_context::build_attn_mha(
                 ggml_tensor * block_scores = ggml_mul_mat(ctx0, k_blocks, q_summary);
                 cb(block_scores, "hisa_block_scores", il);
 
-                ggml_tensor * top_blocks = ggml_argsort_top_k(ctx0, block_scores, (int) top_m_eff);
+                ggml_tensor * top_blocks = nullptr;
+                ggml_tensor * reused_blocks = nullptr;
+
+                if (il > 0 && cparams.hisa_reuse_ratio > 0.0f) {
+                    ggml_tensor * prev_top_blocks = hisa_top_blocks_by_layer[il - 1];
+                    if (prev_top_blocks != nullptr) {
+                        const int64_t reuse_count = std::min<int64_t>(
+                            top_m_eff,
+                            std::max<int64_t>(0, (int64_t) std::llround(top_m_eff * cparams.hisa_reuse_ratio)));
+
+                        if (reuse_count > 0) {
+                            reused_blocks = ggml_view_4d(
+                                ctx0,
+                                prev_top_blocks,
+                                reuse_count,
+                                prev_top_blocks->ne[1],
+                                prev_top_blocks->ne[2],
+                                prev_top_blocks->ne[3],
+                                prev_top_blocks->nb[1],
+                                prev_top_blocks->nb[2],
+                                prev_top_blocks->nb[3],
+                                0);
+                            reused_blocks = ggml_cont(ctx0, reused_blocks);
+                            cb(reused_blocks, "hisa_reused_blocks", il);
+
+                            ggml_tensor * reused_scores = ggml_get_rows(ctx0, block_scores, reused_blocks);
+                            ggml_tensor * reused_mask = ggml_fill(ctx0, reused_scores, -INFINITY);
+                            block_scores = ggml_set_rows(ctx0, block_scores, reused_mask, reused_blocks);
+                            cb(block_scores, "hisa_block_scores_masked", il);
+
+                            const int64_t refresh_count = top_m_eff - reuse_count;
+                            if (refresh_count > 0) {
+                                ggml_tensor * refresh_blocks = ggml_argsort_top_k(ctx0, block_scores, (int) refresh_count);
+                                cb(refresh_blocks, "hisa_top_blocks_refresh", il);
+                                top_blocks = ggml_concat(ctx0, reused_blocks, refresh_blocks, 0);
+                            } else {
+                                top_blocks = reused_blocks;
+                            }
+                        }
+                    }
+                }
+
+                if (top_blocks == nullptr) {
+                    top_blocks = ggml_argsort_top_k(ctx0, block_scores, (int) top_m_eff);
+                }
+                if (!ggml_is_contiguous(top_blocks)) {
+                    top_blocks = ggml_cont(ctx0, top_blocks);
+                }
+                hisa_top_blocks_by_layer[il] = top_blocks;
                 cb(top_blocks, "hisa_top_blocks", il);
+
                 ggml_tensor * block_bases = ggml_scale(ctx0, ggml_cast(ctx0, top_blocks, GGML_TYPE_F32), (float) cparams.hisa_block_size);
                 block_bases = ggml_reshape_4d(ctx0, block_bases, 1, top_m_eff, 1, n_stream);
                 block_bases = ggml_repeat_4d(ctx0, block_bases, cparams.hisa_block_size, top_m_eff, 1, n_stream);
@@ -2090,6 +2140,10 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
             return build_attn_core(q_perm, k_sparse_perm, v_sparse_perm, kq_mask_sparse);
         }
+    }
+
+    if (il >= 0 && il < (int) hisa_top_blocks_by_layer.size()) {
+        hisa_top_blocks_by_layer[il] = nullptr;
     }
 
     ggml_tensor * k_perm = ggml_permute(ctx0, k, 0, 2, 1, 3);
