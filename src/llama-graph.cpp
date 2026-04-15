@@ -2009,7 +2009,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
     if (use_hisa) {
         const int64_t n_kv = k_perm->ne[1];
-        const int64_t q_window = std::min<int64_t>(q_perm->ne[1], cparams.hisa_top_k);
+        const int64_t q_window = std::min<int64_t>(q_split->ne[1], cparams.hisa_top_k);
         const int64_t local_start = std::max<int64_t>(0, n_kv - (int64_t) cparams.hisa_local_window);
         const int64_t prefix_tokens = (local_start / cparams.hisa_block_size) * cparams.hisa_block_size;
         const int64_t n_candidate_blocks = prefix_tokens / cparams.hisa_block_size;
@@ -2018,7 +2018,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         const int64_t sparse_token_count = top_m_eff * (int64_t) cparams.hisa_block_size + local_count;
 
         if (q_window > 0 && sparse_token_count > 0 && sparse_token_count < n_kv) {
-            ggml_tensor * q_head0 = ggml_view_4d(ctx0, q_perm, q_perm->ne[0], q_perm->ne[1], 1, q_perm->ne[3], q_perm->nb[1], q_perm->nb[2], q_perm->nb[3], 0);
+            ggml_tensor * q_head0 = ggml_view_4d(ctx0, q_split, q_split->ne[0], q_split->ne[1], 1, q_split->ne[3], q_split->nb[1], q_split->nb[2], q_split->nb[3], 0);
             q_head0 = ggml_view_4d(ctx0, q_head0, q_head0->ne[0], q_window, 1, q_head0->ne[3], q_head0->nb[1], q_head0->nb[2], q_head0->nb[3], (q_head0->ne[1] - q_window) * q_head0->nb[1]);
             q_head0 = ggml_permute(ctx0, q_head0, 1, 0, 2, 3);
             ggml_tensor * q_summary = ggml_pool_1d(ctx0, q_head0, GGML_OP_POOL_AVG, (int) q_window, (int) q_window, 0);
@@ -2030,8 +2030,8 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
             if (top_m_eff > 0) {
                 ggml_tensor * k_head0 = ggml_view_4d(ctx0, k_perm, k_perm->ne[0], k_perm->ne[1], 1, k_perm->ne[3], k_perm->nb[1], k_perm->nb[2], k_perm->nb[3], 0);
-                k_head0 = ggml_view_4d(ctx0, k_head0, prefix_tokens, k_head0->ne[1], k_head0->ne[2], k_head0->ne[3], k_head0->nb[1], k_head0->nb[2], k_head0->nb[3], 0);
                 k_head0 = ggml_permute(ctx0, k_head0, 1, 0, 2, 3);
+                k_head0 = ggml_view_4d(ctx0, k_head0, prefix_tokens, k_head0->ne[1], k_head0->ne[2], k_head0->ne[3], k_head0->nb[1], k_head0->nb[2], k_head0->nb[3], 0);
 
                 ggml_tensor * k_blocks = ggml_pool_1d(ctx0, k_head0, GGML_OP_POOL_AVG, cparams.hisa_block_size, cparams.hisa_block_size, 0);
                 k_blocks = ggml_permute(ctx0, k_blocks, 1, 0, 2, 3);
@@ -2123,7 +2123,13 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             ggml_tensor * k_sparse_perm = ggml_get_rows(ctx0, k_perm, kv_ids);
             cb(k_sparse_perm, "hisa_k_sparse", il);
 
-            ggml_tensor * v_sparse_perm = ggml_get_rows(ctx0, v_perm, kv_ids);
+            ggml_tensor * v_sparse_perm;
+            if (v_trans) {
+                v_sparse_perm = ggml_get_rows(ctx0, v_perm, kv_ids);
+            } else {
+                ggml_tensor * v_sparse = ggml_get_rows(ctx0, v, kv_ids);
+                v_sparse_perm = ggml_permute(ctx0, v_sparse, 0, 2, 1, 3);
+            }
             cb(v_sparse_perm, "hisa_v_sparse", il);
 
             ggml_tensor * kq_mask_sparse = ggml_get_rows(ctx0, kq_mask, mask_ids);
