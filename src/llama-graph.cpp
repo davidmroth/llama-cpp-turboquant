@@ -2023,6 +2023,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             q_head0 = ggml_permute(ctx0, q_head0, 1, 0, 2, 3);
             ggml_tensor * q_summary = ggml_pool_1d(ctx0, q_head0, GGML_OP_POOL_AVG, (int) q_window, (int) q_window, 0);
             q_summary = ggml_permute(ctx0, q_summary, 1, 0, 2, 3);
+            q_summary = ggml_cont(ctx0, q_summary);
             cb(q_summary, "hisa_q_summary", il);
 
             ggml_tensor * mask_ids = nullptr;
@@ -2035,6 +2036,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
                 ggml_tensor * k_blocks = ggml_pool_1d(ctx0, k_head0, GGML_OP_POOL_AVG, cparams.hisa_block_size, cparams.hisa_block_size, 0);
                 k_blocks = ggml_permute(ctx0, k_blocks, 1, 0, 2, 3);
+                k_blocks = ggml_cont(ctx0, k_blocks);
                 cb(k_blocks, "hisa_k_blocks", il);
 
                 ggml_tensor * block_scores = ggml_mul_mat(ctx0, k_blocks, q_summary);
