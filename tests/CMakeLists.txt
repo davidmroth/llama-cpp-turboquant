@@ -298,6 +298,8 @@ if (TARGET gguf-model-data)
     target_compile_definitions(export-graph-ops PRIVATE LLAMA_HF_FETCH)
 endif()
 
+llama_build_and_test(test-hisa-cache-compat.cpp)
+
 if (NOT WIN32)
     llama_test_cmd(
         ${CMAKE_CURRENT_SOURCE_DIR}/test-hisa-graph.sh
@@ -307,4 +309,13 @@ if (NOT WIN32)
         ARGS $<TARGET_FILE:export-graph-ops> "${MODEL_DEST}" "${CMAKE_CURRENT_BINARY_DIR}/hisa-graph-smoke.txt"
     )
     set_tests_properties(test-hisa-graph-smoke PROPERTIES FIXTURES_REQUIRED test-download-model)
+
+    llama_test_cmd(
+        ${CMAKE_CURRENT_SOURCE_DIR}/test-export-graph-ops-invalid-cache.sh
+        NAME test-export-graph-ops-invalid-cache
+        LABEL model
+        WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
+        ARGS $<TARGET_FILE:export-graph-ops> "${MODEL_DEST}"
+    )
+    set_tests_properties(test-export-graph-ops-invalid-cache PROPERTIES FIXTURES_REQUIRED test-download-model)
 endif()

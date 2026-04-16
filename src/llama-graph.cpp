@@ -97,6 +97,14 @@ bool llm_graph_input_embd::can_reuse(const llm_graph_params & params) {
     return res;
 }
 
+bool llama_hisa_supports_kv_types(enum ggml_type type_k, enum ggml_type type_v) {
+    return type_k != GGML_TYPE_TURBO2_0 &&
+           type_k != GGML_TYPE_TURBO3_0 &&
+           type_k != GGML_TYPE_TURBO4_0 &&
+           type_v != GGML_TYPE_TURBO2_0 &&
+           type_v != GGML_TYPE_TURBO3_0;
+}
+
 void llm_graph_input_pos::set_input(const llama_ubatch * ubatch) {
     if (ubatch->pos && pos) {
         const int64_t n_tokens = ubatch->n_tokens;
@@ -2000,12 +2008,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         kq_b == nullptr &&
         q_split->ne[1] > 1 &&
         k_perm->ne[1] >= (int64_t) cparams.hisa_min_seq_len &&
-        k->type != GGML_TYPE_TURBO2_0 &&
-        k->type != GGML_TYPE_TURBO3_0 &&
-        k->type != GGML_TYPE_TURBO4_0 &&
-        v->type != GGML_TYPE_TURBO2_0 &&
-        v->type != GGML_TYPE_TURBO3_0 &&
-        v->type != GGML_TYPE_TURBO4_0;
+        llama_hisa_supports_kv_types(k->type, v->type);
 
     if (use_hisa) {
         const int64_t n_kv = k_perm->ne[1];
