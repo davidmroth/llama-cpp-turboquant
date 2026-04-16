@@ -2127,10 +2127,11 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
             ggml_tensor * v_sparse_perm;
             if (v_trans) {
-                v_sparse_perm = ggml_get_rows(ctx0, v_perm, kv_ids);
+                ggml_tensor * v_rows = ggml_cont(ctx0, ggml_transpose(ctx0, v_perm));
+                ggml_tensor * v_sparse = ggml_get_rows(ctx0, v_rows, kv_ids);
+                v_sparse_perm = ggml_transpose(ctx0, v_sparse);
             } else {
-                ggml_tensor * v_sparse = ggml_get_rows(ctx0, v, kv_ids);
-                v_sparse_perm = ggml_permute(ctx0, v_sparse, 0, 2, 1, 3);
+                v_sparse_perm = ggml_get_rows(ctx0, v_perm, kv_ids);
             }
             cb(v_sparse_perm, "hisa_v_sparse", il);
 
