@@ -105,6 +105,15 @@ bool llama_hisa_supports_kv_types(enum ggml_type type_k, enum ggml_type type_v) 
            type_v != GGML_TYPE_TURBO3_0;
 }
 
+ggml_tensor * llama_hisa_expand_kv_ids(ggml_context * ctx, ggml_tensor * mask_ids, const ggml_tensor * k_perm) {
+    GGML_ASSERT(mask_ids != nullptr);
+    GGML_ASSERT(k_perm != nullptr);
+    GGML_ASSERT(mask_ids->ne[1] == 1);
+    GGML_ASSERT(mask_ids->ne[2] == k_perm->ne[3]);
+
+    return ggml_repeat_4d(ctx, mask_ids, mask_ids->ne[0], k_perm->ne[2], mask_ids->ne[2], 1);
+}
+
 void llm_graph_input_pos::set_input(const llama_ubatch * ubatch) {
     if (ubatch->pos && pos) {
         const int64_t n_tokens = ubatch->n_tokens;
@@ -2109,7 +2118,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
                 block_tokens = ggml_permute(ctx0, block_tokens, 0, 1, 3, 2);
                 block_tokens = ggml_cont(ctx0, block_tokens);
                 mask_ids = ggml_reshape_4d(ctx0, block_tokens, cparams.hisa_block_size * top_m_eff, 1, n_stream, 1);
-                kv_ids = ggml_repeat_4d(ctx0, mask_ids, cparams.hisa_block_size * top_m_eff, n_head_kv, n_stream, 1);
+                kv_ids = llama_hisa_expand_kv_ids(ctx0, mask_ids, k_perm);
             }
 
             if (local_count > 0) {
@@ -2117,7 +2126,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
                 local_ids = ggml_cast(ctx0, local_ids, GGML_TYPE_I32);
                 local_ids = ggml_reshape_4d(ctx0, local_ids, local_count, 1, 1, 1);
                 ggml_tensor * local_mask_ids = ggml_repeat_4d(ctx0, local_ids, local_count, 1, n_stream, 1);
-                ggml_tensor * local_kv_ids = ggml_repeat_4d(ctx0, local_mask_ids, local_count, n_head_kv, n_stream, 1);
+                ggml_tensor * local_kv_ids = llama_hisa_expand_kv_ids(ctx0, local_mask_ids, k_perm);
 
                 mask_ids = mask_ids ? ggml_concat(ctx0, mask_ids, local_mask_ids, 0) : local_mask_ids;
                 kv_ids = kv_ids ? ggml_concat(ctx0, kv_ids, local_kv_ids, 0) : local_kv_ids;

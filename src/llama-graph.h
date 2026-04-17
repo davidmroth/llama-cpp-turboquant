@@ -75,6 +75,7 @@ struct llama_cross {
 struct llm_graph_params;
 
 bool llama_hisa_supports_kv_types(enum ggml_type type_k, enum ggml_type type_v);
+ggml_tensor * llama_hisa_expand_kv_ids(ggml_context * ctx, ggml_tensor * mask_ids, const ggml_tensor * k_perm);
 
 //
 // llm_graph_input

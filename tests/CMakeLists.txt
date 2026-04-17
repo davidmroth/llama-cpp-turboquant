@@ -299,6 +299,7 @@ if (TARGET gguf-model-data)
 endif()
 
 llama_build_and_test(test-hisa-cache-compat.cpp)
+llama_build_and_test(test-hisa-kv-ids.cpp)
 
 if (NOT WIN32)
     llama_test_cmd(
