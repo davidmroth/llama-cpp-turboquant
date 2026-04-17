@@ -114,6 +114,10 @@ ggml_tensor * llama_hisa_expand_kv_ids(ggml_context * ctx, ggml_tensor * mask_id
     return ggml_repeat_4d(ctx, mask_ids, mask_ids->ne[0], k_perm->ne[2], mask_ids->ne[2], 1);
 }
 
+bool llama_hisa_can_reuse_blocks(int64_t prev_block_count, int64_t curr_block_count) {
+    return prev_block_count > 0 && prev_block_count <= curr_block_count;
+}
+
 void llm_graph_input_pos::set_input(const llama_ubatch * ubatch) {
     if (ubatch->pos && pos) {
         const int64_t n_tokens = ubatch->n_tokens;
@@ -952,7 +956,8 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     res              (params.res),
     ctx0             (res->get_ctx()),
     gf               (res->get_gf()),
-    hisa_top_blocks_by_layer(n_layer, nullptr) {
+    hisa_top_blocks_by_layer(n_layer, nullptr),
+    hisa_block_count_by_layer(n_layer, 0) {
         res->set_params(params);
     }
 
@@ -2030,6 +2035,15 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         const int64_t sparse_token_count = top_m_eff * (int64_t) cparams.hisa_block_size + local_count;
 
         if (q_window > 0 && sparse_token_count > 0 && sparse_token_count < n_kv) {
+            // Clear per-layer HISA state up front; only set it if we actually
+            // compute top_blocks below. This keeps cross-layer reuse safe when
+            // a layer takes a local-only HISA path (top_m_eff == 0) or when
+            // HISA is skipped entirely for a subsequent layer.
+            if (il >= 0 && il < (int) hisa_top_blocks_by_layer.size()) {
+                hisa_top_blocks_by_layer[il]  = nullptr;
+                hisa_block_count_by_layer[il] = 0;
+            }
+
             ggml_tensor * q_head0 = ggml_view_4d(ctx0, q_split, q_split->ne[0], q_split->ne[1], 1, q_split->ne[3], q_split->nb[1], q_split->nb[2], q_split->nb[3], 0);
             q_head0 = ggml_view_4d(ctx0, q_head0, q_head0->ne[0], q_window, 1, q_head0->ne[3], q_head0->nb[1], q_head0->nb[2], q_head0->nb[3], (q_head0->ne[1] - q_window) * q_head0->nb[1]);
             q_head0 = ggml_permute(ctx0, q_head0, 1, 0, 2, 3);
@@ -2059,7 +2073,14 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
                 if (il > 0 && cparams.hisa_reuse_ratio > 0.0f) {
                     ggml_tensor * prev_top_blocks = hisa_top_blocks_by_layer[il - 1];
-                    if (prev_top_blocks != nullptr) {
+                    // Only reuse when the previous layer selected indices against a
+                    // block grid that fits within the current layer's grid. This is
+                    // safe for uniform-KV models and prevents out-of-range indices
+                    // when per-layer KV geometry differs (e.g. Gemma4 ISWA crossing
+                    // full<->local attention layers).
+                    const int64_t prev_block_count = hisa_block_count_by_layer[il - 1];
+                    if (prev_top_blocks != nullptr &&
+                        llama_hisa_can_reuse_blocks(prev_block_count, n_candidate_blocks)) {
                         const int64_t reuse_count = std::min<int64_t>(
                             top_m_eff,
                             std::max<int64_t>(0, (int64_t) std::llround(top_m_eff * cparams.hisa_reuse_ratio)));
@@ -2102,7 +2123,8 @@ ggml_tensor * llm_graph_context::build_attn_mha(
                 if (!ggml_is_contiguous(top_blocks)) {
                     top_blocks = ggml_cont(ctx0, top_blocks);
                 }
-                hisa_top_blocks_by_layer[il] = top_blocks;
+                hisa_top_blocks_by_layer[il]  = top_blocks;
+                hisa_block_count_by_layer[il] = n_candidate_blocks;
                 cb(top_blocks, "hisa_top_blocks", il);
 
                 ggml_tensor * block_bases = ggml_scale(ctx0, ggml_cast(ctx0, top_blocks, GGML_TYPE_F32), (float) cparams.hisa_block_size);
@@ -2158,7 +2180,8 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     }
 
     if (il >= 0 && il < (int) hisa_top_blocks_by_layer.size()) {
-        hisa_top_blocks_by_layer[il] = nullptr;
+        hisa_top_blocks_by_layer[il]  = nullptr;
+        hisa_block_count_by_layer[il] = 0;
     }
 
     // TurboQuant note: graph-side Q rotation (pre-rotate-queries) is implemented below

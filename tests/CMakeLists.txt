@@ -300,6 +300,7 @@ endif()
 
 llama_build_and_test(test-hisa-cache-compat.cpp)
 llama_build_and_test(test-hisa-kv-ids.cpp)
+llama_build_and_test(test-hisa-reuse-gate.cpp)
 
 if (NOT WIN32)
     llama_test_cmd(

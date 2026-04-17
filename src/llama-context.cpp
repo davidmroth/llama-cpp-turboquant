@@ -8,6 +8,7 @@
 #include "llama-mmap.h"
 #include "llama-model.h"
 #include "llama-ext.h"
+#include "llama-graph.h"
 
 #include <cinttypes>
 #include <cmath>
@@ -237,6 +238,18 @@ llama_context::llama_context(
         LLAMA_LOG_INFO("%s: hisa_min_seq   = %u\n",   __func__, cparams.hisa_min_seq_len);
         LLAMA_LOG_INFO("%s: hisa_local_win = %u\n",   __func__, cparams.hisa_local_window);
         LLAMA_LOG_INFO("%s: hisa_reuse     = %.3f\n", __func__, cparams.hisa_reuse_ratio);
+
+        // Diagnostic: HISA falls back to dense prefill on a per-layer basis
+        // inside build_attn_mha() when the KV cache types are unsupported.
+        // Log the decision up front so users do not have to guess why sparse
+        // prefill was silently skipped.
+        if (!llama_hisa_supports_kv_types(params.type_k, params.type_v)) {
+            LLAMA_LOG_WARN(
+                "%s: HISA requested but KV types (K=%s, V=%s) are unsupported - "
+                "prefill will fall back to dense/flash attention. "
+                "HISA requires non-TurboQuant K (F16/BF16/Q8_0/...) and V of type F16/BF16/Q8_0/TURBO4_0.\n",
+                __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
+        }
     }
 
     if (cparams.n_ctx_seq < hparams.n_ctx_train) {

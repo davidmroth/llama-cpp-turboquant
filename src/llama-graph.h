@@ -77,6 +77,13 @@ struct llm_graph_params;
 bool llama_hisa_supports_kv_types(enum ggml_type type_k, enum ggml_type type_v);
 ggml_tensor * llama_hisa_expand_kv_ids(ggml_context * ctx, ggml_tensor * mask_ids, const ggml_tensor * k_perm);
 
+// Gate for cross-layer block reuse: only reuse previous-layer indices when
+// they are in-range for the current layer's candidate-block grid. Returns
+// false when the previous layer did not record a selection, or when its
+// grid was larger than the current layer's (would yield out-of-range indices
+// in `ggml_get_rows` / `ggml_set_rows` on block_scores).
+bool llama_hisa_can_reuse_blocks(int64_t prev_block_count, int64_t curr_block_count);
+
 //
 // llm_graph_input
 //
@@ -771,6 +778,10 @@ struct llm_graph_context {
     ggml_cgraph  * gf   = nullptr;
 
     mutable std::vector<ggml_tensor *> hisa_top_blocks_by_layer;
+    // candidate block count for the KV grid each layer selected against;
+    // used to gate cross-layer reuse when per-layer KV geometry varies
+    // (for example Gemma4 ISWA / layer-reuse callbacks)
+    mutable std::vector<int64_t> hisa_block_count_by_layer;
 
     llm_graph_context(const llm_graph_params & params);
     virtual ~llm_graph_context() = default;
