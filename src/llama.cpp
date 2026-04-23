@@ -45,6 +45,18 @@ const char * llama_flash_attn_type_name(enum llama_flash_attn_type flash_attn_ty
     GGML_ABORT("fatal error");
 }
 
+const char * llama_prefill_attn_type_name(enum llama_prefill_attn_type prefill_attn_type) {
+    switch (prefill_attn_type) {
+        case LLAMA_PREFILL_ATTN_TYPE_AUTO:
+            return "auto";
+        case LLAMA_PREFILL_ATTN_TYPE_DENSE:
+            return "dense";
+        case LLAMA_PREFILL_ATTN_TYPE_HISA:
+            return "hisa";
+    }
+    GGML_ABORT("fatal error");
+}
+
 struct llama_device_memory_data {
     int64_t total;
     int64_t free;

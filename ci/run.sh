@@ -10,6 +10,9 @@
 # # with CUDA support
 # GG_BUILD_CUDA=1 bash ./ci/run.sh ./tmp/results ./tmp/mnt
 #
+# # compile-only CUDA build on a host without a visible NVIDIA GPU
+# GG_BUILD_CUDA=1 GG_BUILD_ONLY=1 GG_BUILD_CUDA_ARCHITECTURES="75;80;86;89" bash ./ci/run.sh ./tmp/results ./tmp/mnt
+#
 # # with SYCL support
 # GG_BUILD_SYCL=1 bash ./ci/run.sh ./tmp/results ./tmp/mnt
 #
@@ -72,7 +75,9 @@ if [ ! -z ${GG_BUILD_CUDA} ]; then
     # TODO: Remove GGML_CUDA_CUB_3DOT2 flag once CCCL 3.2 is bundled within CTK and that CTK version is used in this project
     CMAKE_EXTRA="${CMAKE_EXTRA} -DGGML_CUDA=ON -DGGML_CUDA_CUB_3DOT2=ON"
 
-    if command -v nvidia-smi >/dev/null 2>&1; then
+    if [ -n "${GG_BUILD_CUDA_ARCHITECTURES}" ]; then
+        CMAKE_EXTRA="${CMAKE_EXTRA} -DCMAKE_CUDA_ARCHITECTURES=${GG_BUILD_CUDA_ARCHITECTURES}"
+    elif command -v nvidia-smi >/dev/null 2>&1; then
         CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d '.')
         if [[ -n "$CUDA_ARCH" && "$CUDA_ARCH" =~ ^[0-9]+$ ]]; then
             CMAKE_EXTRA="${CMAKE_EXTRA} -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH}"
@@ -81,7 +86,7 @@ if [ ! -z ${GG_BUILD_CUDA} ]; then
             CMAKE_EXTRA="${CMAKE_EXTRA} -DCMAKE_CUDA_ARCHITECTURES=61;70;75;80;86;89"
         fi
     else
-        echo "Error: nvidia-smi not found, cannot build with CUDA"
+        echo "Error: nvidia-smi not found. Set GG_BUILD_CUDA_ARCHITECTURES for compile-only CUDA builds on hosts without a visible NVIDIA GPU."
         exit 1
     fi
 fi
@@ -279,6 +284,33 @@ function gg_sum_ctest_release {
     gg_printf '- status: %s\n' "$(cat $OUT/${ci}.exit)"
     gg_printf '```\n'
     gg_printf '%s\n' "$(cat $OUT/${ci}-ctest.log)"
+    gg_printf '```\n'
+}
+
+# build_release
+
+function gg_run_build_release {
+    cd ${SRC}
+
+    rm -rf build-ci-release && mkdir build-ci-release && cd build-ci-release
+
+    set -e
+
+    gg_check_build_requirements
+
+    (cmake -G "${CMAKE_GENERATOR}" -DCMAKE_BUILD_TYPE=Release ${CMAKE_EXTRA} .. ) 2>&1 | tee -a $OUT/${ci}-cmake.log
+    (time cmake --build . --config Release -j$(nproc)) 2>&1 | tee -a $OUT/${ci}-make.log
+
+    set +e
+}
+
+function gg_sum_build_release {
+    gg_printf '### %s\n\n' "${ci}"
+
+    gg_printf 'Runs a release configure/build without executing tests\n'
+    gg_printf '- status: %s\n' "$(cat $OUT/${ci}.exit)"
+    gg_printf '```\n'
+    gg_printf '%s\n' "$(cat $OUT/${ci}-make.log)"
     gg_printf '```\n'
 }
 
@@ -697,7 +729,7 @@ function gg_sum_test_backend_ops_cpu {
 export LLAMA_LOG_PREFIX=1
 export LLAMA_LOG_TIMESTAMPS=1
 
-if [ -z ${GG_BUILD_LOW_PERF} ]; then
+if [ -z ${GG_BUILD_LOW_PERF} ] && [ -z "${GG_BUILD_ONLY}" ]; then
     # Create symlink: ./llama.cpp/models-mnt -> $MNT/models
     rm -rf ${SRC}/models-mnt
     mnt_models=${MNT}/models
@@ -717,14 +749,18 @@ fi
 
 ret=0
 
-test $ret -eq 0 && gg_run ctest_debug
-test $ret -eq 0 && gg_run ctest_release
+if [ -n "${GG_BUILD_ONLY}" ]; then
+    test $ret -eq 0 && gg_run build_release
+else
+    test $ret -eq 0 && gg_run ctest_debug
+    test $ret -eq 0 && gg_run ctest_release
+fi
 
-if [ ! -z ${GG_BUILD_HIGH_PERF} ]; then
+if [ -z "${GG_BUILD_ONLY}" ] && [ ! -z ${GG_BUILD_HIGH_PERF} ]; then
     test $ret -eq 0 && gg_run test_backend_ops_cpu
 fi
 
-if [ -z ${GG_BUILD_LOW_PERF} ]; then
+if [ -z "${GG_BUILD_ONLY}" ] && [ -z ${GG_BUILD_LOW_PERF} ]; then
     test $ret -eq 0 && gg_run embd_bge_small
     test $ret -eq 0 && gg_run rerank_tiny
 

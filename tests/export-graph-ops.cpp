@@ -82,8 +82,8 @@ struct test_object {
     }
 
     bool operator<(const test_object &b) const {
-        return std::tie(op, type, ne, op_params, sources) <
-               std::tie(b.op, b.type, b.ne, b.op_params, b.sources);
+        return std::tie(op, type, ne, op_params, sources, name) <
+               std::tie(b.op, b.type, b.ne, b.op_params, b.sources, b.name);
     }
 };
 
@@ -152,6 +152,10 @@ int main(int argc, char ** argv) {
         init_result = common_init_from_params(params);
 
         ctx = init_result->context();
+        if (!ctx) {
+            LOG_ERR("failed to create llama_context\n");
+            return 1;
+        }
     } else {
 #ifdef LLAMA_HF_FETCH
         auto [hf_repo, hf_quant] = common_download_split_repo_tag(params.model.hf_repo);

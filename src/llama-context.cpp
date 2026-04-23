@@ -8,6 +8,7 @@
 #include "llama-mmap.h"
 #include "llama-model.h"
 #include "llama-ext.h"
+#include "llama-graph.h"
 
 #include <cinttypes>
 #include <cmath>
@@ -150,6 +151,30 @@ llama_context::llama_context(
 
     cparams.flash_attn = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED;
     cparams.auto_fa    = params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO;
+    cparams.prefill_attn_type = params.prefill_attn_type;
+    cparams.hisa_top_k        = params.hisa_top_k;
+    cparams.hisa_block_size   = params.hisa_block_size;
+    cparams.hisa_top_m_blocks = params.hisa_top_m_blocks;
+    cparams.hisa_min_seq_len  = params.hisa_min_seq_len;
+    cparams.hisa_local_window = params.hisa_local_window;
+    cparams.hisa_reuse_ratio  = params.hisa_reuse_ratio;
+
+    if (cparams.prefill_attn_type == LLAMA_PREFILL_ATTN_TYPE_HISA) {
+        if (!cparams.causal_attn || params.embeddings) {
+            LLAMA_LOG_WARN("%s: HISA prefill mode requires causal text attention - forcing dense prefill\n", __func__);
+            cparams.prefill_attn_type = LLAMA_PREFILL_ATTN_TYPE_DENSE;
+        }
+
+        if (cparams.hisa_top_k == 0 ||
+            cparams.hisa_block_size == 0 ||
+            cparams.hisa_top_m_blocks == 0 ||
+            cparams.hisa_min_seq_len == 0 ||
+            cparams.hisa_local_window == 0 ||
+            cparams.hisa_reuse_ratio < 0.0f ||
+            cparams.hisa_reuse_ratio > 1.0f) {
+            throw std::runtime_error("invalid HISA prefill parameters");
+        }
+    }
 
     cparams.fused_gdn_ar = true;
     cparams.fused_gdn_ch = true;
@@ -201,9 +226,31 @@ llama_context::llama_context(
     LLAMA_LOG_INFO("%s: n_ubatch      = %u\n",   __func__, cparams.n_ubatch);
     LLAMA_LOG_INFO("%s: causal_attn   = %d\n",   __func__, cparams.causal_attn);
     LLAMA_LOG_INFO("%s: flash_attn    = %s\n",   __func__, llama_flash_attn_type_name(params.flash_attn_type));
+    LLAMA_LOG_INFO("%s: prefill_attn  = %s\n",   __func__, llama_prefill_attn_type_name(cparams.prefill_attn_type));
     LLAMA_LOG_INFO("%s: kv_unified    = %s\n",   __func__, cparams.kv_unified ? "true" : "false");
     LLAMA_LOG_INFO("%s: freq_base     = %.1f\n", __func__, cparams.rope_freq_base);
     LLAMA_LOG_INFO("%s: freq_scale    = %g\n",   __func__, cparams.rope_freq_scale);
+
+    if (cparams.prefill_attn_type == LLAMA_PREFILL_ATTN_TYPE_HISA) {
+        LLAMA_LOG_INFO("%s: hisa_top_k     = %u\n",   __func__, cparams.hisa_top_k);
+        LLAMA_LOG_INFO("%s: hisa_block_sz  = %u\n",   __func__, cparams.hisa_block_size);
+        LLAMA_LOG_INFO("%s: hisa_top_m     = %u\n",   __func__, cparams.hisa_top_m_blocks);
+        LLAMA_LOG_INFO("%s: hisa_min_seq   = %u\n",   __func__, cparams.hisa_min_seq_len);
+        LLAMA_LOG_INFO("%s: hisa_local_win = %u\n",   __func__, cparams.hisa_local_window);
+        LLAMA_LOG_INFO("%s: hisa_reuse     = %.3f\n", __func__, cparams.hisa_reuse_ratio);
+
+        // Diagnostic: HISA falls back to dense prefill on a per-layer basis
+        // inside build_attn_mha() when the KV cache types are unsupported.
+        // Log the decision up front so users do not have to guess why sparse
+        // prefill was silently skipped.
+        if (!llama_hisa_supports_kv_types(params.type_k, params.type_v)) {
+            LLAMA_LOG_WARN(
+                "%s: HISA requested but KV types (K=%s, V=%s) are unsupported - "
+                "prefill will fall back to dense/flash attention. "
+                "HISA requires non-TurboQuant K (F16/BF16/Q8_0/...) and V of type F16/BF16/Q8_0/TURBO4_0.\n",
+                __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
+        }
+    }
 
     if (cparams.n_ctx_seq < hparams.n_ctx_train) {
         LLAMA_LOG_WARN("%s: n_ctx_seq (%u) < n_ctx_train (%u) -- the full capacity of the model will not be utilized\n",
@@ -2892,6 +2939,13 @@ llama_context_params llama_context_default_params() {
         /*.pooling_type                =*/ LLAMA_POOLING_TYPE_UNSPECIFIED,
         /*.attention_type              =*/ LLAMA_ATTENTION_TYPE_UNSPECIFIED,
         /*.flash_attn_type             =*/ LLAMA_FLASH_ATTN_TYPE_AUTO,
+        /*.prefill_attn_type           =*/ LLAMA_PREFILL_ATTN_TYPE_AUTO,
+        /*.hisa_top_k                  =*/ 2048,
+        /*.hisa_block_size             =*/ 128,
+        /*.hisa_top_m_blocks           =*/ 64,
+        /*.hisa_min_seq_len            =*/ 4096,
+        /*.hisa_local_window           =*/ 256,
+        /*.hisa_reuse_ratio            =*/ 0.8f,
         /*.rope_freq_base              =*/ 0.0f,
         /*.rope_freq_scale             =*/ 0.0f,
         /*.yarn_ext_factor             =*/ -1.0f,
@@ -2940,6 +2994,16 @@ llama_context * llama_init_from_model(
     if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && model->arch == LLM_ARCH_GROK) {
         LLAMA_LOG_WARN("%s: flash_attn is not compatible with Grok - forcing off\n", __func__);
         params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    }
+
+    if (params.prefill_attn_type == LLAMA_PREFILL_ATTN_TYPE_HISA && params.hisa_reuse_ratio < 0.0f) {
+        LLAMA_LOG_ERROR("%s: HISA reuse ratio must be >= 0\n", __func__);
+        return nullptr;
+    }
+
+    if (params.prefill_attn_type == LLAMA_PREFILL_ATTN_TYPE_HISA && params.hisa_reuse_ratio > 1.0f) {
+        LLAMA_LOG_ERROR("%s: HISA reuse ratio must be <= 1\n", __func__);
+        return nullptr;
     }
 
     if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO && ggml_is_quantized(params.type_k)) {

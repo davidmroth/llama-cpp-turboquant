@@ -41,6 +41,14 @@ struct llama_cparams {
     bool pipeline_parallel;
 
     enum llama_pooling_type pooling_type;
+    enum llama_prefill_attn_type prefill_attn_type;
+
+    uint32_t hisa_top_k;
+    uint32_t hisa_block_size;
+    uint32_t hisa_top_m_blocks;
+    uint32_t hisa_min_seq_len;
+    uint32_t hisa_local_window;
+    float    hisa_reuse_ratio;
 
     ggml_backend_sched_eval_callback cb_eval;
     void * cb_eval_user_data;

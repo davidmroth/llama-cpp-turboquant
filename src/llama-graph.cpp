@@ -11,6 +11,7 @@
 #include "llama-memory-recurrent.h"
 
 #include <cassert>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <numeric>
@@ -94,6 +95,27 @@ bool llm_graph_input_embd::can_reuse(const llm_graph_params & params) {
     res &= (!params.ubatch.embd)  || (embd   &&   embd->ne[1] == params.ubatch.n_tokens);
 
     return res;
+}
+
+bool llama_hisa_supports_kv_types(enum ggml_type type_k, enum ggml_type type_v) {
+    return type_k != GGML_TYPE_TURBO2_0 &&
+           type_k != GGML_TYPE_TURBO3_0 &&
+           type_k != GGML_TYPE_TURBO4_0 &&
+           type_v != GGML_TYPE_TURBO2_0 &&
+           type_v != GGML_TYPE_TURBO3_0;
+}
+
+ggml_tensor * llama_hisa_expand_kv_ids(ggml_context * ctx, ggml_tensor * mask_ids, const ggml_tensor * k_perm) {
+    GGML_ASSERT(mask_ids != nullptr);
+    GGML_ASSERT(k_perm != nullptr);
+    GGML_ASSERT(mask_ids->ne[1] == 1);
+    GGML_ASSERT(mask_ids->ne[2] == k_perm->ne[3]);
+
+    return ggml_repeat_4d(ctx, mask_ids, mask_ids->ne[0], k_perm->ne[2], mask_ids->ne[2], 1);
+}
+
+bool llama_hisa_can_reuse_blocks(int64_t prev_block_count, int64_t curr_block_count) {
+    return prev_block_count > 0 && prev_block_count <= curr_block_count;
 }
 
 void llm_graph_input_pos::set_input(const llama_ubatch * ubatch) {
@@ -933,7 +955,9 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     cb_func          (params.cb),
     res              (params.res),
     ctx0             (res->get_ctx()),
-    gf               (res->get_gf()) {
+    gf               (res->get_gf()),
+    hisa_top_blocks_by_layer(n_layer, nullptr),
+    hisa_block_count_by_layer(n_layer, 0) {
         res->set_params(params);
     }
 
@@ -1845,156 +1869,326 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     // split the batch into streams if needed
     const auto n_stream = k->ne[3];
 
-    q = ggml_view_4d(ctx0, q, q->ne[0], q->ne[1], q->ne[2]/n_stream, n_stream, q->nb[1], q->nb[2], q->nb[3]/n_stream, 0);
+    ggml_tensor * q_split = ggml_view_4d(ctx0, q, q->ne[0], q->ne[1], q->ne[2]/n_stream, n_stream, q->nb[1], q->nb[2], q->nb[3]/n_stream, 0);
 
-    q = ggml_permute(ctx0, q, 0, 2, 1, 3);
-    k = ggml_permute(ctx0, k, 0, 2, 1, 3);
-    v = ggml_permute(ctx0, v, 0, 2, 1, 3);
+    auto build_attn_core = [&](ggml_tensor * q_perm, ggml_tensor * k_perm, ggml_tensor * v_perm, ggml_tensor * kq_mask_cur) -> ggml_tensor * {
+        ggml_tensor * cur;
+
+        const bool use_flash_attn = cparams.flash_attn && kq_b == nullptr;
+        if (use_flash_attn) {
+            GGML_ASSERT(kq_b == nullptr && "Flash attention does not support KQ bias yet");
+
+            if (v_trans) {
+                v_perm = ggml_transpose(ctx0, v_perm);
+            }
+
+            // this can happen when KV cache is not used (e.g. an embedding model with non-causal attn)
+            if (k_perm->type == GGML_TYPE_F32) {
+                k_perm = ggml_cast(ctx0, k_perm, GGML_TYPE_F16);
+            }
+
+            if (v_perm->type == GGML_TYPE_F32) {
+                v_perm = ggml_cast(ctx0, v_perm, GGML_TYPE_F16);
+            }
+
+            cur = ggml_flash_attn_ext(ctx0, q_perm, k_perm, v_perm, kq_mask_cur, kq_scale, hparams.f_max_alibi_bias,
+                                      hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
+            cb(cur, LLAMA_TENSOR_NAME_FATTN, il);
+
+            ggml_flash_attn_ext_add_sinks(cur, sinks);
+            ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
+
+            // TurboQuant: inverse WHT on FA output when V values are WHT-rotated.
+            // For MLA, V is a view of K with different ne[0] (e.g. V=512, K=576).
+            // Group size must come from K (which determines the WHT rotation), not V.
+            if (v_perm->type == GGML_TYPE_TURBO3_0 || v_perm->type == GGML_TYPE_TURBO4_0 || v_perm->type == GGML_TYPE_TURBO2_0) {
+                const bool k_is_turbo = (k_perm->type == GGML_TYPE_TURBO3_0 || k_perm->type == GGML_TYPE_TURBO4_0 || k_perm->type == GGML_TYPE_TURBO2_0);
+                const ggml_tensor * group_src = k_is_turbo ? k_perm : v_perm;
+                const int turbo_group = (group_src->ne[0] % 128 == 0) ? 128 : 64;
+                if (cur->ne[0] % turbo_group == 0) {
+                    if (!ggml_is_contiguous(cur)) { cur = ggml_cont(ctx0, cur); }
+                    ggml_tensor * innerq_scale = mctx ? mctx->get_turbo_innerq_scale_inv() : nullptr;
+                    cur = ggml_turbo_wht(ctx0, cur, 1, turbo_group, innerq_scale);  // 1 = inverse
+                }
+            }
+
+            if (v_mla) {
+#if 0
+                // v_mla can be applied as a matrix-vector multiplication with broadcasting across dimension 3 == n_tokens.
+                // However, the code is optimized for dimensions 0 and 1 being large, so this is inefficient.
+                cur = ggml_reshape_4d(ctx0, cur, v_mla->ne[0], 1, n_head, n_tokens);
+                cur = ggml_mul_mat(ctx0, v_mla, cur);
+#else
+                // It's preferable to do the calculation as a matrix-matrix multiplication with n_tokens in dimension 1.
+                // The permutations are noops and only change how the tensor data is interpreted.
+                cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
+                cur = ggml_mul_mat(ctx0, v_mla, cur);
+                cb(cur, "fattn_mla", il);
+                cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
+                cur = ggml_cont(ctx0, cur); // Needed because ggml_reshape_2d expects contiguous inputs.
+#endif
+            }
+
+            cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
+        } else {
+            ggml_tensor * kq = ggml_mul_mat(ctx0, k_perm, q_perm);
+            cb(kq, "kq", il);
+
+            // note: this op tends to require high floating point range
+            //       while for some models F16 is enough, for others it is not, so we default to F32 here
+            ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
+
+            if (arch == LLM_ARCH_GROK) {
+                // need to do the following:
+                // multiply by attn_output_multiplier
+                // and then :
+                // kq = 30 * tanh(kq / 30)
+                // before the softmax below
+
+                kq = ggml_tanh(ctx0, ggml_scale(ctx0, kq, hparams.f_attn_out_scale / hparams.f_attn_logit_softcapping));
+                cb(kq, "kq_tanh", il);
+                kq = ggml_scale(ctx0, kq, hparams.f_attn_logit_softcapping);
+                cb(kq, "kq_scaled", il);
+            }
+
+            if (hparams.attn_soft_cap) {
+                kq = ggml_scale(ctx0, kq, 1.0f / hparams.f_attn_logit_softcapping);
+                cb(kq, "kq_scaled_1", il);
+                kq = ggml_tanh (ctx0, kq);
+                cb(kq, "kq_tanh", il);
+                kq = ggml_scale(ctx0, kq, hparams.f_attn_logit_softcapping);
+                cb(kq, "kq_scaled_2", il);
+            }
+
+            if (kq_b) {
+                kq = ggml_add(ctx0, kq, kq_b);
+                cb(kq, "kq_plus_kq_b", il);
+            }
+
+            kq = ggml_soft_max_ext(ctx0, kq, kq_mask_cur, kq_scale, hparams.f_max_alibi_bias);
+            ggml_soft_max_add_sinks(kq, sinks);
+            cb(kq, "kq_soft_max", il);
+
+            if (!v_trans) {
+                // note: avoid this branch
+                v_perm = ggml_cont(ctx0, ggml_transpose(ctx0, v_perm));
+                cb(v_perm, "v_cont", il);
+            }
+
+            ggml_tensor * kqv = ggml_mul_mat(ctx0, v_perm, kq);
+            cb(kqv, "kqv", il);
+
+            // TurboQuant: inverse WHT on attention output (non-FA path)
+            if (v_perm->type == GGML_TYPE_TURBO3_0 || v_perm->type == GGML_TYPE_TURBO4_0 || v_perm->type == GGML_TYPE_TURBO2_0) {
+                const bool k_is_turbo = (k_perm->type == GGML_TYPE_TURBO3_0 || k_perm->type == GGML_TYPE_TURBO4_0 || k_perm->type == GGML_TYPE_TURBO2_0);
+                const ggml_tensor * group_src = k_is_turbo ? k_perm : v_perm;
+                const int turbo_group = (group_src->ne[0] % 128 == 0) ? 128 : 64;
+                if (kqv->ne[0] % turbo_group == 0) {
+                    if (!ggml_is_contiguous(kqv)) { kqv = ggml_cont(ctx0, kqv); }
+                    ggml_tensor * innerq_scale = mctx ? mctx->get_turbo_innerq_scale_inv() : nullptr;
+                    kqv = ggml_turbo_wht(ctx0, kqv, 1, turbo_group, innerq_scale);
+                }
+            }
+
+            // for MLA with the absorption optimization, we need to "decompress" from MQA back to MHA
+            if (v_mla) {
+                kqv = ggml_mul_mat(ctx0, v_mla, kqv);
+                cb(kqv, "kqv_mla", il);
+            }
+
+            cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
+
+            // recombine streams
+            cur = ggml_cont_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
+
+            if (!cparams.offload_kqv) {
+                // all nodes between the KV store and the attention output are run on the CPU
+                ggml_backend_sched_set_tensor_backend(sched, cur, backend_cpu);
+            }
+        }
+
+        ggml_build_forward_expand(gf, cur);
+
+        return cur;
+    };
+
+    ggml_tensor * q_perm = ggml_permute(ctx0, q_split, 0, 2, 1, 3);
+    ggml_tensor * k_perm = ggml_permute(ctx0, k, 0, 2, 1, 3);
+    ggml_tensor * v_perm = ggml_permute(ctx0, v, 0, 2, 1, 3);
+
+    const bool use_hisa =
+        cparams.prefill_attn_type == LLAMA_PREFILL_ATTN_TYPE_HISA &&
+        cparams.causal_attn &&
+        kq_b == nullptr &&
+        q_split->ne[1] > 1 &&
+        k_perm->ne[1] >= (int64_t) cparams.hisa_min_seq_len &&
+        llama_hisa_supports_kv_types(k->type, v->type);
+
+    if (use_hisa) {
+        const int64_t n_kv = k_perm->ne[1];
+        const int64_t q_window = std::min<int64_t>(q_split->ne[1], cparams.hisa_top_k);
+        const int64_t local_start = std::max<int64_t>(0, n_kv - (int64_t) cparams.hisa_local_window);
+        const int64_t prefix_tokens = (local_start / cparams.hisa_block_size) * cparams.hisa_block_size;
+        const int64_t n_candidate_blocks = prefix_tokens / cparams.hisa_block_size;
+        const int64_t local_count = n_kv - local_start;
+        const int64_t top_m_eff = std::min<int64_t>(cparams.hisa_top_m_blocks, n_candidate_blocks);
+        const int64_t sparse_token_count = top_m_eff * (int64_t) cparams.hisa_block_size + local_count;
+
+        if (q_window > 0 && sparse_token_count > 0 && sparse_token_count < n_kv) {
+            // Clear per-layer HISA state up front; only set it if we actually
+            // compute top_blocks below. This keeps cross-layer reuse safe when
+            // a layer takes a local-only HISA path (top_m_eff == 0) or when
+            // HISA is skipped entirely for a subsequent layer.
+            if (il >= 0 && il < (int) hisa_top_blocks_by_layer.size()) {
+                hisa_top_blocks_by_layer[il]  = nullptr;
+                hisa_block_count_by_layer[il] = 0;
+            }
+
+            ggml_tensor * q_head0 = ggml_view_4d(ctx0, q_split, q_split->ne[0], q_split->ne[1], 1, q_split->ne[3], q_split->nb[1], q_split->nb[2], q_split->nb[3], 0);
+            q_head0 = ggml_view_4d(ctx0, q_head0, q_head0->ne[0], q_window, 1, q_head0->ne[3], q_head0->nb[1], q_head0->nb[2], q_head0->nb[3], (q_head0->ne[1] - q_window) * q_head0->nb[1]);
+            q_head0 = ggml_permute(ctx0, q_head0, 1, 0, 2, 3);
+            ggml_tensor * q_summary = ggml_pool_1d(ctx0, q_head0, GGML_OP_POOL_AVG, (int) q_window, (int) q_window, 0);
+            q_summary = ggml_permute(ctx0, q_summary, 1, 0, 2, 3);
+            q_summary = ggml_cont(ctx0, q_summary);
+            cb(q_summary, "hisa_q_summary", il);
+
+            ggml_tensor * mask_ids = nullptr;
+            ggml_tensor * kv_ids = nullptr;
+
+            if (top_m_eff > 0) {
+                ggml_tensor * k_head0 = ggml_view_4d(ctx0, k_perm, k_perm->ne[0], k_perm->ne[1], 1, k_perm->ne[3], k_perm->nb[1], k_perm->nb[2], k_perm->nb[3], 0);
+                k_head0 = ggml_permute(ctx0, k_head0, 1, 0, 2, 3);
+                k_head0 = ggml_view_4d(ctx0, k_head0, prefix_tokens, k_head0->ne[1], k_head0->ne[2], k_head0->ne[3], k_head0->nb[1], k_head0->nb[2], k_head0->nb[3], 0);
+
+                ggml_tensor * k_blocks = ggml_pool_1d(ctx0, k_head0, GGML_OP_POOL_AVG, cparams.hisa_block_size, cparams.hisa_block_size, 0);
+                k_blocks = ggml_permute(ctx0, k_blocks, 1, 0, 2, 3);
+                k_blocks = ggml_cont(ctx0, k_blocks);
+                cb(k_blocks, "hisa_k_blocks", il);
+
+                ggml_tensor * block_scores = ggml_mul_mat(ctx0, k_blocks, q_summary);
+                cb(block_scores, "hisa_block_scores", il);
+
+                ggml_tensor * top_blocks = nullptr;
+                ggml_tensor * reused_blocks = nullptr;
+
+                if (il > 0 && cparams.hisa_reuse_ratio > 0.0f) {
+                    ggml_tensor * prev_top_blocks = hisa_top_blocks_by_layer[il - 1];
+                    // Only reuse when the previous layer selected indices against a
+                    // block grid that fits within the current layer's grid. This is
+                    // safe for uniform-KV models and prevents out-of-range indices
+                    // when per-layer KV geometry differs (e.g. Gemma4 ISWA crossing
+                    // full<->local attention layers).
+                    const int64_t prev_block_count = hisa_block_count_by_layer[il - 1];
+                    if (prev_top_blocks != nullptr &&
+                        llama_hisa_can_reuse_blocks(prev_block_count, n_candidate_blocks)) {
+                        const int64_t reuse_count = std::min<int64_t>(
+                            top_m_eff,
+                            std::max<int64_t>(0, (int64_t) std::llround(top_m_eff * cparams.hisa_reuse_ratio)));
+
+                        if (reuse_count > 0) {
+                            reused_blocks = ggml_view_4d(
+                                ctx0,
+                                prev_top_blocks,
+                                reuse_count,
+                                prev_top_blocks->ne[1],
+                                prev_top_blocks->ne[2],
+                                prev_top_blocks->ne[3],
+                                prev_top_blocks->nb[1],
+                                prev_top_blocks->nb[2],
+                                prev_top_blocks->nb[3],
+                                0);
+                            reused_blocks = ggml_cont(ctx0, reused_blocks);
+                            cb(reused_blocks, "hisa_reused_blocks", il);
+
+                            ggml_tensor * reused_scores = ggml_get_rows(ctx0, block_scores, reused_blocks);
+                            ggml_tensor * reused_mask = ggml_fill(ctx0, reused_scores, -INFINITY);
+                            block_scores = ggml_set_rows(ctx0, block_scores, reused_mask, reused_blocks);
+                            cb(block_scores, "hisa_block_scores_masked", il);
+
+                            const int64_t refresh_count = top_m_eff - reuse_count;
+                            if (refresh_count > 0) {
+                                ggml_tensor * refresh_blocks = ggml_argsort_top_k(ctx0, block_scores, (int) refresh_count);
+                                cb(refresh_blocks, "hisa_top_blocks_refresh", il);
+                                top_blocks = ggml_concat(ctx0, reused_blocks, refresh_blocks, 0);
+                            } else {
+                                top_blocks = reused_blocks;
+                            }
+                        }
+                    }
+                }
+
+                if (top_blocks == nullptr) {
+                    top_blocks = ggml_argsort_top_k(ctx0, block_scores, (int) top_m_eff);
+                }
+                if (!ggml_is_contiguous(top_blocks)) {
+                    top_blocks = ggml_cont(ctx0, top_blocks);
+                }
+                hisa_top_blocks_by_layer[il]  = top_blocks;
+                hisa_block_count_by_layer[il] = n_candidate_blocks;
+                cb(top_blocks, "hisa_top_blocks", il);
+
+                ggml_tensor * block_bases = ggml_scale(ctx0, ggml_cast(ctx0, top_blocks, GGML_TYPE_F32), (float) cparams.hisa_block_size);
+                block_bases = ggml_reshape_4d(ctx0, block_bases, 1, top_m_eff, 1, n_stream);
+                block_bases = ggml_repeat_4d(ctx0, block_bases, cparams.hisa_block_size, top_m_eff, 1, n_stream);
+
+                ggml_tensor * block_offsets = ggml_arange(ctx0, 0.0f, (float) cparams.hisa_block_size, 1.0f);
+                block_offsets = ggml_reshape_4d(ctx0, block_offsets, cparams.hisa_block_size, 1, 1, 1);
+                block_offsets = ggml_repeat_4d(ctx0, block_offsets, cparams.hisa_block_size, top_m_eff, 1, n_stream);
+
+                ggml_tensor * block_tokens = ggml_add(ctx0, block_bases, block_offsets);
+                block_tokens = ggml_cast(ctx0, block_tokens, GGML_TYPE_I32);
+                block_tokens = ggml_permute(ctx0, block_tokens, 0, 1, 3, 2);
+                block_tokens = ggml_cont(ctx0, block_tokens);
+                mask_ids = ggml_reshape_4d(ctx0, block_tokens, cparams.hisa_block_size * top_m_eff, 1, n_stream, 1);
+                kv_ids = llama_hisa_expand_kv_ids(ctx0, mask_ids, k_perm);
+            }
+
+            if (local_count > 0) {
+                ggml_tensor * local_ids = ggml_arange(ctx0, (float) local_start, (float) n_kv, 1.0f);
+                local_ids = ggml_cast(ctx0, local_ids, GGML_TYPE_I32);
+                local_ids = ggml_reshape_4d(ctx0, local_ids, local_count, 1, 1, 1);
+                ggml_tensor * local_mask_ids = ggml_repeat_4d(ctx0, local_ids, local_count, 1, n_stream, 1);
+                ggml_tensor * local_kv_ids = llama_hisa_expand_kv_ids(ctx0, local_mask_ids, k_perm);
+
+                mask_ids = mask_ids ? ggml_concat(ctx0, mask_ids, local_mask_ids, 0) : local_mask_ids;
+                kv_ids = kv_ids ? ggml_concat(ctx0, kv_ids, local_kv_ids, 0) : local_kv_ids;
+            }
+
+            GGML_ASSERT(mask_ids != nullptr && kv_ids != nullptr);
+
+            ggml_tensor * k_sparse_perm = ggml_get_rows(ctx0, k_perm, kv_ids);
+            cb(k_sparse_perm, "hisa_k_sparse", il);
+
+            ggml_tensor * v_sparse_perm;
+            if (v_trans) {
+                ggml_tensor * v_rows = ggml_cont(ctx0, ggml_transpose(ctx0, v_perm));
+                ggml_tensor * v_sparse = ggml_get_rows(ctx0, v_rows, kv_ids);
+                v_sparse_perm = ggml_transpose(ctx0, v_sparse);
+            } else {
+                v_sparse_perm = ggml_get_rows(ctx0, v_perm, kv_ids);
+            }
+            cb(v_sparse_perm, "hisa_v_sparse", il);
+
+            ggml_tensor * kq_mask_sparse = ggml_get_rows(ctx0, kq_mask, mask_ids);
+            if (cparams.flash_attn && kq_mask_sparse->type == GGML_TYPE_F32) {
+                kq_mask_sparse = ggml_cast(ctx0, kq_mask_sparse, GGML_TYPE_F16);
+            }
+            cb(kq_mask_sparse, "hisa_kq_mask_sparse", il);
+
+            return build_attn_core(q_perm, k_sparse_perm, v_sparse_perm, kq_mask_sparse);
+        }
+    }
+
+    if (il >= 0 && il < (int) hisa_top_blocks_by_layer.size()) {
+        hisa_top_blocks_by_layer[il]  = nullptr;
+        hisa_block_count_by_layer[il] = 0;
+    }
 
     // TurboQuant note: graph-side Q rotation (pre-rotate-queries) is implemented below
     // in the flash-attn path. The VEC kernel bug (wrong Q/K stride in
     // vec_dot_fattn_vec_KQ_turbo3_0) was fixed in fattn-common.cuh to match f16 pattern.
 
-    ggml_tensor * cur;
-
-    const bool use_flash_attn = cparams.flash_attn && kq_b == nullptr;
-    if (use_flash_attn) {
-        GGML_ASSERT(kq_b == nullptr && "Flash attention does not support KQ bias yet");
-
-        if (v_trans) {
-            v = ggml_transpose(ctx0, v);
-        }
-
-        // this can happen when KV cache is not used (e.g. an embedding model with non-causal attn)
-        if (k->type == GGML_TYPE_F32) {
-            k = ggml_cast(ctx0, k, GGML_TYPE_F16);
-        }
-
-        if (v->type == GGML_TYPE_F32) {
-            v = ggml_cast(ctx0, v, GGML_TYPE_F16);
-        }
-
-        cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, hparams.f_max_alibi_bias,
-                                  hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
-        cb(cur, LLAMA_TENSOR_NAME_FATTN, il);
-
-        ggml_flash_attn_ext_add_sinks(cur, sinks);
-        ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
-
-        // TurboQuant: inverse WHT on FA output when V values are WHT-rotated.
-        // For MLA, V is a view of K with different ne[0] (e.g. V=512, K=576).
-        // Group size must come from K (which determines the WHT rotation), not V.
-        if (v->type == GGML_TYPE_TURBO3_0 || v->type == GGML_TYPE_TURBO4_0 || v->type == GGML_TYPE_TURBO2_0) {
-            const bool k_is_turbo = (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0);
-            const ggml_tensor * group_src = k_is_turbo ? k : v;
-            const int turbo_group = (group_src->ne[0] % 128 == 0) ? 128 : 64;
-            if (cur->ne[0] % turbo_group == 0) {
-                if (!ggml_is_contiguous(cur)) { cur = ggml_cont(ctx0, cur); }
-                ggml_tensor * innerq_scale = mctx ? mctx->get_turbo_innerq_scale_inv() : nullptr;
-                cur = ggml_turbo_wht(ctx0, cur, 1, turbo_group, innerq_scale);  // 1 = inverse
-            }
-        }
-
-        if (v_mla) {
-#if 0
-            // v_mla can be applied as a matrix-vector multiplication with broadcasting across dimension 3 == n_tokens.
-            // However, the code is optimized for dimensions 0 and 1 being large, so this is inefficient.
-            cur = ggml_reshape_4d(ctx0, cur, v_mla->ne[0], 1, n_head, n_tokens);
-            cur = ggml_mul_mat(ctx0, v_mla, cur);
-#else
-            // It's preferable to do the calculation as a matrix-matrix multiplication with n_tokens in dimension 1.
-            // The permutations are noops and only change how the tensor data is interpreted.
-            cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
-            cur = ggml_mul_mat(ctx0, v_mla, cur);
-            cb(cur, "fattn_mla", il);
-            cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
-            cur = ggml_cont(ctx0, cur); // Needed because ggml_reshape_2d expects contiguous inputs.
-#endif
-        }
-
-        cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
-    } else {
-        ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);
-        cb(kq, "kq", il);
-
-        // note: this op tends to require high floating point range
-        //       while for some models F16 is enough, for others it is not, so we default to F32 here
-        ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
-
-        if (arch == LLM_ARCH_GROK) {
-            // need to do the following:
-            // multiply by attn_output_multiplier
-            // and then :
-            // kq = 30 * tanh(kq / 30)
-            // before the softmax below
-
-            kq = ggml_tanh(ctx0, ggml_scale(ctx0, kq, hparams.f_attn_out_scale / hparams.f_attn_logit_softcapping));
-            cb(kq, "kq_tanh", il);
-            kq = ggml_scale(ctx0, kq, hparams.f_attn_logit_softcapping);
-            cb(kq, "kq_scaled", il);
-        }
-
-        if (hparams.attn_soft_cap) {
-            kq = ggml_scale(ctx0, kq, 1.0f / hparams.f_attn_logit_softcapping);
-            cb(kq, "kq_scaled_1", il);
-            kq = ggml_tanh (ctx0, kq);
-            cb(kq, "kq_tanh", il);
-            kq = ggml_scale(ctx0, kq, hparams.f_attn_logit_softcapping);
-            cb(kq, "kq_scaled_2", il);
-        }
-
-        if (kq_b) {
-            kq = ggml_add(ctx0, kq, kq_b);
-            cb(kq, "kq_plus_kq_b", il);
-        }
-
-        kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, hparams.f_max_alibi_bias);
-        ggml_soft_max_add_sinks(kq, sinks);
-        cb(kq, "kq_soft_max", il);
-
-        if (!v_trans) {
-            // note: avoid this branch
-            v = ggml_cont(ctx0, ggml_transpose(ctx0, v));
-            cb(v, "v_cont", il);
-        }
-
-        ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);
-        cb(kqv, "kqv", il);
-
-        // TurboQuant: inverse WHT on attention output (non-FA path)
-        if (v->type == GGML_TYPE_TURBO3_0 || v->type == GGML_TYPE_TURBO4_0 || v->type == GGML_TYPE_TURBO2_0) {
-            const bool k_is_turbo = (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0);
-            const ggml_tensor * group_src = k_is_turbo ? k : v;
-            const int turbo_group = (group_src->ne[0] % 128 == 0) ? 128 : 64;
-            if (kqv->ne[0] % turbo_group == 0) {
-                if (!ggml_is_contiguous(kqv)) { kqv = ggml_cont(ctx0, kqv); }
-                ggml_tensor * innerq_scale = mctx ? mctx->get_turbo_innerq_scale_inv() : nullptr;
-                kqv = ggml_turbo_wht(ctx0, kqv, 1, turbo_group, innerq_scale);
-            }
-        }
-
-        // for MLA with the absorption optimization, we need to "decompress" from MQA back to MHA
-        if (v_mla) {
-            kqv = ggml_mul_mat(ctx0, v_mla, kqv);
-            cb(kqv, "kqv_mla", il);
-        }
-
-        cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
-
-        // recombine streams
-        cur = ggml_cont_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
-
-        if (!cparams.offload_kqv) {
-            // all nodes between the KV store and the attention output are run on the CPU
-            ggml_backend_sched_set_tensor_backend(sched, cur, backend_cpu);
-        }
-    }
-
-    // TurboQuant: graph-side inverse WHT on attention output (undoes V rotation)
-
-    ggml_build_forward_expand(gf, cur);
-
-    return cur;
+    return build_attn_core(q_perm, k_perm, v_perm, kq_mask);
 }
 
 llm_graph_input_attn_no_cache * llm_graph_context::build_attn_inp_no_cache() const {

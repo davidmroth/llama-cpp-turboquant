@@ -2218,6 +2218,14 @@ struct test_get_rows : public test_case {
             }
         }
     }
+
+    double max_nmse_err() override {
+        if (type == GGML_TYPE_TURBO4_0) {
+            return 1e-5;
+        }
+
+        return 1e-7;
+    }
 };
 
 // GGML_OP_GET_ROWS_BACK
@@ -7509,6 +7517,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_get_rows(GGML_TYPE_I32, 256, 5, 4, b, 1, v));
         }
     }
+
+    test_cases.emplace_back(new test_get_rows(GGML_TYPE_TURBO4_0, 128, 5, 4, 1, 1, false));
+    test_cases.emplace_back(new test_get_rows(GGML_TYPE_TURBO4_0, 256, 5, 4, 7, 1, false));
 
     test_cases.emplace_back(new test_get_rows_back(GGML_TYPE_F32, 1, 8, 2, 1, false));
     for (ggml_type type : all_types) {

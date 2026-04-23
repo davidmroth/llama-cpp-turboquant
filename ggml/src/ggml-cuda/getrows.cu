@@ -124,6 +124,86 @@ static void get_rows_cuda_q(
         s10, s11, s12/*, s13*/);
 }
 
+template<typename dst_t>
+static __global__ void k_get_rows_turbo4(
+        const block_turbo4_0 * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
+        const int64_t ne11, const int64_t ne12,
+        const size_t s1, const size_t s2, const size_t s3,
+        const size_t nb01, const size_t nb02, const size_t nb03,
+        const size_t s10, const size_t s11, const size_t s12) {
+    __shared__ float x[QK_TURBO4];
+
+    const int j = threadIdx.x;
+    const int ib = blockIdx.y;
+
+    for (int64_t z = blockIdx.z; z < ne11*ne12; z += gridDim.z) {
+        const int i10 = blockIdx.x;
+        const int i11 = z / ne12;
+        const int i12 = z % ne12;
+
+        const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
+
+        dst_t * dst_row = dst + i10*s1 + i11*s2 + i12*s3;
+        const char * src0_row = (const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03;
+        const block_turbo4_0 * blk = ((const block_turbo4_0 *) src0_row) + ib;
+
+        const float norm = __half2float(blk->norm);
+        x[j] = turbo4_dequant_element(blk, j, norm) * TURBO_WHT_SIGNS2[j];
+        __syncthreads();
+
+#define TURBO4_GET_ROWS_STAGE(H) \
+        if ((j % (2*(H))) < (H)) { \
+            const float a = x[j]; \
+            const float b = x[j + (H)]; \
+            x[j] = a + b; \
+            x[j + (H)] = a - b; \
+        } \
+        __syncthreads()
+
+        TURBO4_GET_ROWS_STAGE(1);
+        TURBO4_GET_ROWS_STAGE(2);
+        TURBO4_GET_ROWS_STAGE(4);
+        TURBO4_GET_ROWS_STAGE(8);
+        TURBO4_GET_ROWS_STAGE(16);
+        TURBO4_GET_ROWS_STAGE(32);
+        TURBO4_GET_ROWS_STAGE(64);
+
+#undef TURBO4_GET_ROWS_STAGE
+
+        x[j] *= 0.08838834764831845f * TURBO_WHT_SIGNS1[j];
+        dst_row[ib*QK_TURBO4 + j] = ggml_cuda_cast<dst_t>(x[j]);
+        __syncthreads();
+    }
+}
+
+template<typename dst_t>
+static void get_rows_cuda_turbo4(
+        const void * src0_d, const int32_t * src1_d, dst_t * dst_d,
+        const int64_t ne00, const size_t nb01, const size_t nb02, const size_t nb03,
+        const int64_t ne10, const int64_t ne11, const int64_t ne12, const size_t nb10, const size_t nb11, const size_t nb12,
+        const size_t nb1, const size_t nb2, const size_t nb3,
+        cudaStream_t stream) {
+    GGML_ASSERT(ne00 % QK_TURBO4 == 0);
+
+    const dim3 block_dims(QK_TURBO4, 1, 1);
+    const dim3 block_nums(ne10, ne00 / QK_TURBO4, MIN(ne11*ne12, UINT16_MAX));
+
+    const size_t s1 = nb1 / sizeof(dst_t);
+    const size_t s2 = nb2 / sizeof(dst_t);
+    const size_t s3 = nb3 / sizeof(dst_t);
+
+    const size_t s10 = nb10 / sizeof(int32_t);
+    const size_t s11 = nb11 / sizeof(int32_t);
+    const size_t s12 = nb12 / sizeof(int32_t);
+
+    k_get_rows_turbo4<<<block_nums, block_dims, 0, stream>>>(
+        (const block_turbo4_0 *) src0_d, src1_d, dst_d,
+        ne11, ne12,
+        s1, s2, s3,
+        nb01, nb02, nb03,
+        s10, s11, s12);
+}
+
 template<typename src0_t, typename dst_t>
 static void get_rows_cuda_float(
         const src0_t * src0_d, const int32_t * src1_d, dst_t * dst_d,
@@ -197,6 +277,10 @@ static void ggml_cuda_get_rows_switch_src0_type(
             break;
         case GGML_TYPE_Q8_0:
             get_rows_cuda_q<QK8_0, QR8_0, dequantize_q8_0>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_TURBO4_0:
+            get_rows_cuda_turbo4(src0_d, src1_d, dst_d,
                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
             break;
         default:

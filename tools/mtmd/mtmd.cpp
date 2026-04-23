@@ -73,6 +73,7 @@ struct mtmd_input_chunk {
     std::vector<llama_token> tokens_text;
     mtmd_image_tokens_ptr tokens_image;
     mtmd_audio_tokens_ptr tokens_audio;
+    mutable std::vector<float> embd_cache;
 };
 
 struct mtmd_input_chunks {
@@ -918,19 +919,38 @@ int32_t mtmd_encode_chunk(mtmd_context * ctx, const mtmd_input_chunk * chunk) {
             LOG_ERR("%s: model does not support vision input\n", __func__);
             return 1;
         }
-        return mtmd_encode(ctx, chunk->tokens_image.get());
+        const size_t n_embd = chunk->tokens_image->n_tokens() * (size_t) clip_n_mmproj_embd(ctx->ctx_v);
+        if (chunk->embd_cache.size() == n_embd) {
+            ctx->image_embd_v = chunk->embd_cache;
+            return 0;
+        }
+
+        const int32_t ret = mtmd_encode(ctx, chunk->tokens_image.get());
+        if (ret == 0) {
+            chunk->embd_cache = ctx->image_embd_v;
+        }
+        return ret;
     } else if (chunk->type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {
         if (!ctx->ctx_a) {
             LOG_ERR("%s: model does not support audio input\n", __func__);
             return 1;
         }
         int n_mmproj_embd = ctx->n_embd_text;
+        const size_t n_embd = (size_t) chunk->tokens_audio->n_tokens * (size_t) n_mmproj_embd;
+        if (chunk->embd_cache.size() == n_embd) {
+            ctx->image_embd_v = chunk->embd_cache;
+            return 0;
+        }
+
         ctx->image_embd_v.resize(chunk->tokens_audio->n_tokens * n_mmproj_embd);
         bool ok = clip_image_batch_encode(
             ctx->ctx_a,
             ctx->n_threads,
             &chunk->tokens_audio->batch_f32,
             ctx->image_embd_v.data());
+        if (ok) {
+            chunk->embd_cache = ctx->image_embd_v;
+        }
         return ok ? 0 : 1;
     }
 
@@ -1179,6 +1199,7 @@ mtmd_input_chunk * mtmd_input_chunk_copy(const mtmd_input_chunk * chunk) {
         copy->tokens_audio = mtmd_audio_tokens_ptr(new mtmd_audio_tokens());
         *copy->tokens_audio = chunk->tokens_audio->clone();
     }
+    // Do not duplicate cached embeddings into chunk copies.
     return copy;
 }
 

@@ -456,6 +456,13 @@ struct common_params {
     enum llama_pooling_type      pooling_type      = LLAMA_POOLING_TYPE_UNSPECIFIED; // pooling type for embeddings
     enum llama_attention_type    attention_type    = LLAMA_ATTENTION_TYPE_UNSPECIFIED; // attention type for embeddings
     enum llama_flash_attn_type   flash_attn_type   = LLAMA_FLASH_ATTN_TYPE_AUTO; // whether to use Flash Attention
+    enum llama_prefill_attn_type prefill_attn_type = LLAMA_PREFILL_ATTN_TYPE_AUTO; // long-prefill attention strategy
+    uint32_t hisa_top_k          = 2048;
+    uint32_t hisa_block_size     = 128;
+    uint32_t hisa_top_m_blocks   = 64;
+    uint32_t hisa_min_seq_len    = 4096;
+    uint32_t hisa_local_window   = 256;
+    float    hisa_reuse_ratio    = 0.8f;
 
     struct common_params_sampling    sampling;
     struct common_params_speculative speculative;
